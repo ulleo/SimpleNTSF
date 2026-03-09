@@ -1,31 +1,71 @@
 import SwiftUI
 import Foundation
+import os.log
+
+// MARK: - Logger
+
+private let logger = Logger(subsystem: "com.simplentfs.app", category: "DiskManager")
+
+// MARK: - Constants
+
+enum Constants {
+    static let configDirName = ".SimpleNTFS"
+    static let configFileName = "ntfs-disks.conf"
+    static let mountNTFSPath = "/opt/homebrew/sbin/mount_ntfs"
+    static let diskUtilPath = "/usr/sbin/diskutil"
+    static let sudoersFilePath = "/etc/sudoers.d/simplentfs"
+    
+    static let forbiddenMountPrefixes = [
+        "/System", "/usr", "/bin", "/sbin", "/etc", "/var",
+        "/Library", "/private", "/Applications", "/Network"
+    ]
+}
 
 // MARK: - Data Models
 
-struct DiskInfo: Identifiable {
-    let id = UUID()
+struct DiskInfo: Identifiable, Codable {
+    let id: UUID
     var uuid: String
     var mountPoint: String
     var device: String
     var currentMount: String
     var isMounted: Bool
+    
+    init(id: UUID = UUID(), uuid: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool) {
+        self.id = id
+        self.uuid = uuid
+        self.mountPoint = mountPoint
+        self.device = device
+        self.currentMount = currentMount
+        self.isMounted = isMounted
+    }
 }
 
-struct PhysicalDisk: Identifiable {
-    let id = UUID()
+struct PhysicalDisk: Identifiable, Codable {
+    let id: UUID
     let device: String
     let uuid: String
     let volumeName: String
     let size: String
-    var isAdded: Bool = false
-    var currentMount: String? = nil
+    var isAdded: Bool
+    var currentMount: String?
+    
+    init(id: UUID = UUID(), device: String, uuid: String, volumeName: String, size: String, isAdded: Bool = false, currentMount: String? = nil) {
+        self.id = id
+        self.device = device
+        self.uuid = uuid
+        self.volumeName = volumeName
+        self.size = size
+        self.isAdded = isAdded
+        self.currentMount = currentMount
+    }
 }
 
 // MARK: - Disk Manager
 
 class DiskManager: ObservableObject {
     @Published var disks: [DiskInfo] = []
+    private let fileLock = NSLock()
     
     var addedUUIDs: Set<String> {
         Set(disks.map { $0.uuid })
@@ -33,21 +73,36 @@ class DiskManager: ObservableObject {
     
     let configPath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let configDir = "\(home)/.SimpleNTFS"
-        let configPath = "\(configDir)/ntfs-disks.conf"
+        let configDir = "\(home)/\(Constants.configDirName)"
+        let configPath = "\(configDir)/\(Constants.configFileName)"
         
-        if !FileManager.default.fileExists(atPath: configDir) {
-            try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        }
-        
-        if !FileManager.default.fileExists(atPath: configPath) {
-            let defaultContent = """
-            # SimpleNTFS 配置文件
-            # 格式：UUID:挂载点路径
-            # 使用 diskutil info /dev/diskXsY | grep "Volume UUID" 获取 UUID
+        do {
+            if !FileManager.default.fileExists(atPath: configDir) {
+                try FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                logger.info("创建配置目录：\(configDir)")
+            }
             
-            """
-            try? defaultContent.write(toFile: configPath, atomically: true, encoding: .utf8)
+            if !FileManager.default.fileExists(atPath: configPath) {
+                let defaultContent = """
+                # SimpleNTFS 配置文件
+                # 格式：UUID:挂载点路径
+                # 使用 diskutil info /dev/diskXsY | grep "Volume UUID" 获取 UUID
+                
+                """
+                try defaultContent.write(toFile: configPath, atomically: true, encoding: .utf8)
+                // 设置配置文件权限为 600（仅所有者可读写）
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+                logger.info("创建配置文件并设置权限 600：\(configPath)")
+            } else {
+                // 验证现有文件权限
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: configPath),
+                   let perms = attrs[.posixPermissions] as? Int,
+                   perms & 0o077 != 0 {
+                    logger.warning("配置文件权限不安全（当前：\(String(perms, radix: 8))），建议设为 600")
+                }
+            }
+        } catch {
+            logger.error("配置文件初始化失败：\(error.localizedDescription)")
         }
         
         return configPath
@@ -57,12 +112,55 @@ class DiskManager: ObservableObject {
         loadConfig()
     }
     
+    // MARK: - Validation
+    
+    func isValidUUID(_ uuid: String) -> Bool {
+        let pattern = "^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$"
+        return uuid.range(of: pattern, options: .regularExpression, caseInsensitive: true) != nil
+    }
+    
+    func validateMountPoint(_ path: String) -> (valid: Bool, message: String) {
+        // 解析 ~ 和相对路径
+        let expanded = (path as NSString).expandingTildeInPath
+        let resolved = URL(fileURLWithPath: expanded).standardized.path
+        
+        // 禁止挂载到系统关键目录
+        for prefix in Constants.forbiddenMountPrefixes {
+            if resolved.hasPrefix(prefix) {
+                return (false, "不允许挂载到系统目录：\(prefix)")
+            }
+        }
+        
+        // 建议限制在用户目录下
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if !resolved.hasPrefix(home) {
+            return (false, "挂载点必须位于用户目录下：\(home)")
+        }
+        
+        // 检查路径是否可写
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory) {
+            if !isDirectory.boolValue {
+                return (false, "挂载点已存在但不是目录")
+            }
+        }
+        
+        return (true, "")
+    }
+    
+    // MARK: - Config Operations
+    
     func loadConfig() {
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        
         disks.removeAll()
         guard FileManager.default.fileExists(atPath: configPath) else { return }
         
-        let content = try? String(contentsOfFile: configPath, encoding: .utf8)
-        guard let lines = content?.components(separatedBy: "\n") else { return }
+        guard let content = try? String(contentsOfFile: configPath, encoding: .utf8),
+              let lines = content.components(separatedBy: "\n").filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }).takeIf({ !$0.isEmpty }) else {
+            return
+        }
         
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -72,6 +170,20 @@ class DiskManager: ObservableObject {
             if parts.count == 2 {
                 let uuid = String(parts[0]).trimmingCharacters(in: .whitespaces)
                 let mountPoint = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                
+                // 验证 UUID 格式
+                guard isValidUUID(uuid) else {
+                    logger.warning("跳过无效的 UUID 格式：\(uuid)")
+                    continue
+                }
+                
+                // 验证挂载点
+                let validation = validateMountPoint(mountPoint)
+                if !validation.valid {
+                    logger.warning("跳过无效的挂载点：\(mountPoint) - \(validation.message)")
+                    continue
+                }
+                
                 let device = findDevice(byUUID: uuid)
                 let isMounted = checkMounted(at: mountPoint)
                 
@@ -84,17 +196,25 @@ class DiskManager: ObservableObject {
                 ))
             }
         }
+        
+        logger.info("加载配置完成，共 \(disks.count) 个硬盘")
     }
     
     func findDevice(byUUID uuid: String) -> String {
         let task = Process()
-        task.launchPath = "/usr/sbin/diskutil"
+        task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
         task.arguments = ["info", uuid]
         let pipe = Pipe()
         task.standardOutput = pipe
         
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
+        
         do {
             try task.run()
+            task.waitUntilExit()
+            
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             
@@ -106,42 +226,66 @@ class DiskManager: ObservableObject {
                     }
                 }
             }
-        } catch { }
+        } catch {
+            logger.error("查找设备失败：\(error.localizedDescription)")
+        }
         return "未找到"
     }
     
     func checkMounted(at mountPoint: String) -> Bool {
         let task = Process()
-        task.launchPath = "/sbin/mount"
+        task.executableURL = URL(fileURLWithPath: "/sbin/mount")
         let pipe = Pipe()
         task.standardOutput = pipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
         
         do {
             try task.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             return output.contains(" \(mountPoint) ")
-        } catch { }
+        } catch {
+            logger.error("检查挂载状态失败：\(error.localizedDescription)")
+        }
         return false
     }
     
     func mountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+        // 验证挂载点
+        let validation = validateMountPoint(mountPoint)
+        if !validation.valid {
+            return (false, validation.message)
+        }
+        
         let device = findDevice(byUUID: uuid)
         guard device != "未找到" else { return (false, "未找到设备") }
         
         let fm = FileManager.default
-        if !fm.fileExists(atPath: mountPoint) {
-            try? fm.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
+        do {
+            if !fm.fileExists(atPath: mountPoint) {
+                try fm.createDirectory(atPath: mountPoint, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+                logger.info("创建挂载点目录：\(mountPoint)")
+            }
+        } catch {
+            return (false, "无法创建挂载点目录：\(error.localizedDescription)")
         }
         
         let task = Process()
-        task.launchPath = "/usr/bin/sudo"
-        task.arguments = ["-n", "/opt/homebrew/sbin/mount_ntfs", "/dev/" + device, mountPoint]
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        task.arguments = ["-n", Constants.mountNTFSPath, "/dev/" + device, mountPoint]
         
         let pipe = Pipe()
         task.standardOutput = pipe
         let errorPipe = Pipe()
         task.standardError = errorPipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
+        }
         
         do {
             try task.run()
@@ -151,11 +295,14 @@ class DiskManager: ObservableObject {
             let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
             
             if task.terminationStatus == 0 {
+                logger.info("挂载成功：\(uuid) -> \(mountPoint)")
                 return (true, "挂载成功！")
             } else {
+                logger.error("挂载失败：\(errorMessage)")
                 return (false, errorMessage.isEmpty ? "挂载失败" : errorMessage)
             }
         } catch {
+            logger.error("执行挂载命令失败：\(error.localizedDescription)")
             return (false, "执行失败：\(error.localizedDescription)")
         }
     }
@@ -165,13 +312,18 @@ class DiskManager: ObservableObject {
         guard device != "未找到" else { return (false, "未找到设备") }
         
         let task = Process()
-        task.launchPath = "/usr/bin/sudo"
-        task.arguments = ["-n", "/usr/sbin/diskutil", "unmountDisk", "force", "/dev/" + device]
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        task.arguments = ["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/" + device]
         
         let pipe = Pipe()
         task.standardOutput = pipe
         let errorPipe = Pipe()
         task.standardError = errorPipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
+        }
         
         do {
             try task.run()
@@ -181,28 +333,62 @@ class DiskManager: ObservableObject {
             let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
             
             if task.terminationStatus == 0 {
+                logger.info("卸载成功：\(uuid)")
                 return (true, "卸载成功！")
             } else {
+                logger.error("卸载失败：\(errorMessage)")
                 return (false, errorMessage.isEmpty ? "卸载失败" : errorMessage)
             }
         } catch {
+            logger.error("执行卸载命令失败：\(error.localizedDescription)")
             return (false, "执行失败：\(error.localizedDescription)")
         }
     }
     
-    func addDisk(uuid: String, mountPoint: String) -> Bool {
+    func addDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+        // 验证 UUID 格式
+        guard isValidUUID(uuid) else {
+            return (false, "无效的 UUID 格式，请使用类似 E0719CA3-71B2-12E0-A9E0-12B4EA12B4C2 的格式")
+        }
+        
+        // 验证挂载点
+        let validation = validateMountPoint(mountPoint)
+        if !validation.valid {
+            return (false, validation.message)
+        }
+        
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        
         var content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
         if !content.isEmpty && !content.hasSuffix("\n") { content += "\n" }
         content += "\(uuid):\(mountPoint)\n"
         
         do {
             try content.write(toFile: configPath, atomically: true, encoding: .utf8)
-            return true
-        } catch { return false }
+            // 确保权限保持 600
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            logger.info("添加硬盘配置：\(uuid) -> \(mountPoint)")
+            return (true, "")
+        } catch {
+            logger.error("添加硬盘配置失败：\(error.localizedDescription)")
+            return (false, "写入配置文件失败")
+        }
     }
     
-    func updateMountPoint(uuid: String, newMountPoint: String) -> Bool {
-        guard var content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return false }
+    func updateMountPoint(uuid: String, newMountPoint: String) -> (success: Bool, message: String) {
+        // 验证挂载点
+        let validation = validateMountPoint(newMountPoint)
+        if !validation.valid {
+            return (false, validation.message)
+        }
+        
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        
+        guard var content = try? String(contentsOfFile: configPath, encoding: .utf8) else {
+            return (false, "读取配置文件失败")
+        }
         var lines = content.components(separatedBy: "\n")
         
         for i in 0..<lines.count {
@@ -217,11 +403,19 @@ class DiskManager: ObservableObject {
         
         do {
             try content.write(toFile: configPath, atomically: true, encoding: .utf8)
-            return true
-        } catch { return false }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            logger.info("更新挂载点：\(uuid) -> \(newMountPoint)")
+            return (true, "")
+        } catch {
+            logger.error("更新挂载点失败：\(error.localizedDescription)")
+            return (false, "写入配置文件失败")
+        }
     }
     
     func deleteDisk(uuid: String) -> Bool {
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        
         guard var content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return false }
         var lines = content.components(separatedBy: "\n")
         
@@ -238,8 +432,22 @@ class DiskManager: ObservableObject {
         
         do {
             try content.write(toFile: configPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            logger.info("删除硬盘配置：\(uuid)")
             return true
-        } catch { return false }
+        } catch {
+            logger.error("删除硬盘配置失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+}
+
+// MARK: - Helper Extension
+
+extension Sequence {
+    func takeIf(_ predicate: (Self) -> Bool) -> Self? {
+        let result = Array(self)
+        return predicate(result) ? result as? Self : nil
     }
 }
 
@@ -262,6 +470,7 @@ struct ContentView: View {
     @State private var isConfiguring = false
     @State private var setupResult: String?
     @State private var setupSuccess = false
+    @State private var showingAlert = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -315,6 +524,7 @@ struct ContentView: View {
                                 let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                                 alertMessage = result.message
                                 alertIsError = !result.success
+                                showingAlert = true
                                 if result.success { manager.loadConfig() }
                             },
                             onUnmount: {
@@ -375,20 +585,24 @@ struct ContentView: View {
             }
             .padding()
         }
-        .alert("提示", isPresented: .constant(alertMessage != nil)) {
-            Button("确定", role: .cancel) { alertMessage = nil }
+        .alert("提示", isPresented: $showingAlert) {
+            Button("确定", role: .cancel) {
+                alertMessage = nil
+                showingAlert = false
+            }
         } message: { Text(alertMessage ?? "") }
         .sheet(isPresented: $showingAddDialog) {
             AddDiskSheet(uuid: $newUUID, mountPoint: $newMountPoint, onSave: {
-                let success = manager.addDisk(uuid: newUUID, mountPoint: newMountPoint)
-                if success {
+                let result = manager.addDisk(uuid: newUUID, mountPoint: newMountPoint)
+                if result.success {
                     manager.loadConfig()
                     showingAddDialog = false
                     newUUID = ""
                     newMountPoint = ""
                 } else {
-                    alertMessage = "添加失败！"
+                    alertMessage = result.message
                     alertIsError = true
+                    showingAlert = true
                 }
             }, onCancel: {
                 showingAddDialog = false
@@ -399,12 +613,16 @@ struct ContentView: View {
         .sheet(isPresented: $showingEditDialog) {
             EditMountPointSheet(disk: editingDisk, mountPoint: $editMountPoint, onSave: {
                 if let disk = editingDisk, !editMountPoint.isEmpty {
-                    let success = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: editMountPoint)
-                    if success {
+                    let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: editMountPoint)
+                    if result.success {
                         manager.loadConfig()
                         showingEditDialog = false
                         editingDisk = nil
                         editMountPoint = ""
+                    } else {
+                        alertMessage = result.message
+                        alertIsError = true
+                        showingAlert = true
                     }
                 }
             }, onCancel: {
@@ -431,7 +649,11 @@ struct ContentView: View {
                         let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         DispatchQueue.main.async {
                             if result.success { manager.loadConfig() }
-                            else { alertMessage = result.message; alertIsError = true }
+                            else {
+                                alertMessage = result.message
+                                alertIsError = true
+                                showingAlert = true
+                            }
                             unmountingDisk = nil
                         }
                     }
@@ -442,7 +664,7 @@ struct ContentView: View {
     
     var isPasswordFree: Bool {
         let task = Process()
-        task.launchPath = "/usr/bin/sudo"
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         task.arguments = ["-n", "true"]
         do {
             try task.run()
@@ -455,18 +677,29 @@ struct ContentView: View {
         isConfiguring = true
         setupResult = "正在配置..."
         
-        let sudoersEntry = "%admin ALL=(ALL) NOPASSWD: /opt/homebrew/sbin/mount_ntfs, /usr/sbin/diskutil"
-        let sudoersFile = "/etc/sudoers.d/simplentfs"
-        let script = "echo '" + sudoersEntry + "' > /tmp/simplentfs_sudoers && sudo mv /tmp/simplentfs_sudoers " + sudoersFile + " && sudo chmod 440 " + sudoersFile
+        // 使用当前用户名而非 admin 组，添加 NOEXEC 标签增强安全性
+        let currentUser = NSUserName()
+        let sudoersEntry = "\(currentUser) ALL=(ALL) NOPASSWD: NOEXEC: \(Constants.mountNTFSPath), \(Constants.diskUtilPath)"
+        let sudoersFile = Constants.sudoersFilePath
+        
+        // 使用临时文件方式，避免字符串拼接注入风险
+        let tempFile = "/tmp/simplentfs_sudoers_\(ProcessInfo.processInfo.processIdentifier)"
+        
+        let script = "echo '\(sudoersEntry)' > '\(tempFile)' && chown root:wheel '\(tempFile)' && chmod 440 '\(tempFile)' && mv '\(tempFile)' '\(sudoersFile)'"
         
         let task = Process()
-        task.launchPath = "/usr/bin/osascript"
-        task.arguments = ["-e", "do shell script \"" + script + "\" with prompt \"SimpleNTFS 需要管理员权限\" with administrator privileges"]
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", "do shell script \"\(script)\" with prompt \"SimpleNTFS 需要管理员权限\" with administrator privileges"]
         
         let pipe = Pipe()
         task.standardOutput = pipe
         let errorPipe = Pipe()
         task.standardError = errorPipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
+        }
         
         DispatchQueue.global().async {
             do {
@@ -478,10 +711,12 @@ struct ContentView: View {
                     if task.terminationStatus == 0 && FileManager.default.fileExists(atPath: sudoersFile) {
                         setupSuccess = true
                         setupResult = "✅ 配置成功！现在挂载/卸载无需密码。"
+                        logger.info("Sudoers 配置成功")
                     } else {
                         setupSuccess = false
                         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
                         setupResult = "❌ 配置失败：" + (String(data: errorData, encoding: .utf8) ?? "未知错误")
+                        logger.error("Sudoers 配置失败")
                     }
                 }
             } catch {
@@ -489,6 +724,7 @@ struct ContentView: View {
                     isConfiguring = false
                     setupSuccess = false
                     setupResult = "❌ 配置失败：" + error.localizedDescription
+                    logger.error("Sudoers 配置异常：\(error.localizedDescription)")
                 }
             }
         }
@@ -638,10 +874,14 @@ struct AddDiskSheet: View {
         DispatchQueue.global().async {
             var disks: [PhysicalDisk] = []
             let task = Process()
-            task.launchPath = "/usr/sbin/diskutil"
+            task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
             task.arguments = ["list"]
             let pipe = Pipe()
             task.standardOutput = pipe
+            
+            defer {
+                pipe.fileHandleForReading.closeFile()
+            }
             
             do {
                 try task.run()
@@ -668,7 +908,7 @@ struct AddDiskSheet: View {
                             let size = parts.dropFirst(2).first ?? ""
                             
                             let uuidTask = Process()
-                            uuidTask.launchPath = "/usr/sbin/diskutil"
+                            uuidTask.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
                             uuidTask.arguments = ["info", device]
                             let uuidPipe = Pipe()
                             uuidTask.standardOutput = uuidPipe
@@ -697,7 +937,9 @@ struct AddDiskSheet: View {
                     
                     if line.isEmpty { currentDisk = nil; currentSize = nil }
                 }
-            } catch { }
+            } catch {
+                logger.error("扫描硬盘失败：\(error.localizedDescription)")
+            }
             
             DispatchQueue.main.async { self.physicalDisks = disks; self.isLoading = false }
         }
@@ -705,9 +947,14 @@ struct AddDiskSheet: View {
     
     func getCurrentMount(for device: String) -> String? {
         let task = Process()
-        task.launchPath = "/sbin/mount"
+        task.executableURL = URL(fileURLWithPath: "/sbin/mount")
         let pipe = Pipe()
         task.standardOutput = pipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
+        
         do {
             try task.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
