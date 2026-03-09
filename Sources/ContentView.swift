@@ -462,7 +462,6 @@ struct ContentView: View {
     @State private var alertIsError = false
     @State private var showingEditDialog = false
     @State private var editingDisk: DiskInfo?
-    @State private var editMountPoint = ""
     @State private var showingDeleteConfirm = false
     @State private var deletingDisk: DiskInfo?
     @State private var showingUnmountConfirm = false
@@ -547,7 +546,6 @@ struct ContentView: View {
                             onEdit: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
                                 editingDisk = disk
-                                editMountPoint = disk.mountPoint
                                 showingEditDialog = true
                             },
                             onDelete: {
@@ -652,14 +650,13 @@ struct ContentView: View {
             }, addedUUIDs: manager.addedUUIDs)
         }
         .sheet(isPresented: $showingEditDialog) {
-            EditMountPointSheet(disk: editingDisk, mountPoint: $editMountPoint, onSave: {
-                if let disk = editingDisk, !editMountPoint.isEmpty {
-                    let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: editMountPoint)
+            EditMountPointSheet(disk: editingDisk, onSave: { newMountPoint in
+                if let disk = editingDisk, !newMountPoint.isEmpty {
+                    let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
                     if result.success {
                         manager.loadConfig()
                         showingEditDialog = false
                         editingDisk = nil
-                        editMountPoint = ""
                     } else {
                         alertMessage = result.message
                         alertIsError = true
@@ -669,7 +666,6 @@ struct ContentView: View {
             }, onCancel: {
                 showingEditDialog = false
                 editingDisk = nil
-                editMountPoint = ""
             })
         }
         .alert("确认删除", isPresented: $showingDeleteConfirm) {
@@ -1086,9 +1082,10 @@ struct DiskListItem: View {
 
 struct EditMountPointSheet: View {
     let disk: DiskInfo?
-    @Binding var mountPoint: String
-    let onSave: () -> Void
+    let onSave: (String) -> Void
     let onCancel: () -> Void
+    
+    @State private var mountPoint = ""
     
     var body: some View {
         VStack(spacing: 20) {
@@ -1115,8 +1112,15 @@ struct EditMountPointSheet: View {
             HStack {
                 Button("取消", action: onCancel).buttonStyle(.bordered)
                 Spacer()
-                Button("保存", action: onSave).buttonStyle(.borderedProminent).disabled(mountPoint.isEmpty)
+                Button("保存", action: { onSave(mountPoint) }).buttonStyle(.borderedProminent).disabled(mountPoint.isEmpty)
             }
-        }.padding(30).frame(minWidth: 500, minHeight: 300)
+        }
+        .padding(30)
+        .frame(minWidth: 500, minHeight: 300)
+        .onAppear {
+            if let disk = disk {
+                mountPoint = disk.mountPoint
+            }
+        }
     }
 }
