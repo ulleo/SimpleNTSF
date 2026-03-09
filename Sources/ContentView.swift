@@ -471,6 +471,9 @@ struct ContentView: View {
     @State private var setupResult: String?
     @State private var setupSuccess = false
     @State private var showingAlert = false
+    // Loading 状态管理
+    @State private var loadingStates: [String: Bool] = [:]  // UUID -> isLoading
+    @State private var isBatchOperating = false  // 批量操作中
     
     var body: some View {
         VStack(spacing: 0) {
@@ -520,23 +523,35 @@ struct ContentView: View {
                     ForEach($manager.disks) { $disk in
                         DiskRow(
                             disk: $disk,
+                            isLoading: loadingStates[disk.uuid] ?? false,
+                            isBatchOperating: isBatchOperating,
                             onMount: {
-                                let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
-                                alertMessage = result.message
-                                alertIsError = !result.success
-                                showingAlert = true
-                                if result.success { manager.loadConfig() }
+                                guard !isBatchOperating else { return }
+                                loadingStates[disk.uuid] = true
+                                DispatchQueue.global().async {
+                                    let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                                    DispatchQueue.main.async {
+                                        alertMessage = result.message
+                                        alertIsError = !result.success
+                                        showingAlert = true
+                                        loadingStates[disk.uuid] = false
+                                        if result.success { manager.loadConfig() }
+                                    }
+                                }
                             },
                             onUnmount: {
+                                guard !isBatchOperating else { return }
                                 unmountingDisk = disk
                                 showingUnmountConfirm = true
                             },
                             onEdit: {
+                                guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
                                 editingDisk = disk
                                 editMountPoint = disk.mountPoint
                                 showingEditDialog = true
                             },
                             onDelete: {
+                                guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
                                 deletingDisk = disk
                                 showingDeleteConfirm = true
                             }
@@ -562,26 +577,52 @@ struct ContentView: View {
                 Button(action: { showingAddDialog = true }) {
                     Label("➕ 新增硬盘", systemImage: "plus")
                 }
+                .disabled(isBatchOperating || !loadingStates.isEmpty)
                 Button(action: { manager.loadConfig() }) {
                     Label("🔄 刷新", systemImage: "arrow.clockwise")
                 }
+                .disabled(isBatchOperating)
                 Spacer()
                 Button(action: {
-                    for disk in manager.disks {
-                        _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                    isBatchOperating = true
+                    DispatchQueue.global().async {
+                        for disk in manager.disks {
+                            _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                        }
+                        DispatchQueue.main.async {
+                            isBatchOperating = false
+                            manager.loadConfig()
+                        }
                     }
-                    manager.loadConfig()
                 }) {
-                    Label("⬆️ 全部挂载", systemImage: "externaldrive.fill")
+                    HStack {
+                        if isBatchOperating {
+                            ProgressView().scaleEffect(0.8)
+                        }
+                        Label("⬆️ 全部挂载", systemImage: "externaldrive.fill")
+                    }
                 }
+                .disabled(isBatchOperating || !loadingStates.isEmpty)
                 Button(action: {
-                    for disk in manager.disks {
-                        _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                    isBatchOperating = true
+                    DispatchQueue.global().async {
+                        for disk in manager.disks {
+                            _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                        }
+                        DispatchQueue.main.async {
+                            isBatchOperating = false
+                            manager.loadConfig()
+                        }
                     }
-                    manager.loadConfig()
                 }) {
-                    Label("⬇️ 全部卸载", systemImage: "eject.fill")
+                    HStack {
+                        if isBatchOperating {
+                            ProgressView().scaleEffect(0.8)
+                        }
+                        Label("⬇️ 全部卸载", systemImage: "eject.fill")
+                    }
                 }
+                .disabled(isBatchOperating || !loadingStates.isEmpty)
             }
             .padding()
         }
@@ -645,9 +686,11 @@ struct ContentView: View {
             Button("取消", role: .cancel) { unmountingDisk = nil }
             Button("卸载", role: .destructive) {
                 if let disk = unmountingDisk {
+                    loadingStates[disk.uuid] = true
                     DispatchQueue.global().async {
                         let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         DispatchQueue.main.async {
+                            loadingStates[disk.uuid] = false
                             if result.success { manager.loadConfig() }
                             else {
                                 alertMessage = result.message
@@ -735,10 +778,16 @@ struct ContentView: View {
 
 struct DiskRow: View {
     @Binding var disk: DiskInfo
+    let isLoading: Bool
+    let isBatchOperating: Bool
     let onMount: () -> Void
     let onUnmount: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    
+    private var isDisabled: Bool {
+        isLoading || isBatchOperating
+    }
     
     var body: some View {
         HStack {
@@ -761,19 +810,54 @@ struct DiskRow: View {
             Spacer()
             
             HStack(spacing: 6) {
-                Button(action: onEdit) { Image(systemName: "pencil") }.buttonStyle(.bordered).tint(.blue)
-                if disk.isMounted {
-                    Button("卸载", action: onUnmount).buttonStyle(.bordered).tint(.orange)
-                } else {
-                    Button("挂载", action: onMount).buttonStyle(.bordered).tint(.green)
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
                 }
-                Button(action: onDelete) { Image(systemName: "trash") }.buttonStyle(.bordered).tint(.red)
+                .buttonStyle(.bordered)
+                .tint(.blue)
+                .disabled(isDisabled)
+                
+                if disk.isMounted {
+                    Button(action: onUnmount) {
+                        HStack {
+                            if isLoading {
+                                ProgressView().scaleEffect(0.7)
+                            } else {
+                                Text("卸载")
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                    .disabled(isDisabled)
+                } else {
+                    Button(action: onMount) {
+                        HStack {
+                            if isLoading {
+                                ProgressView().scaleEffect(0.7)
+                            } else {
+                                Text("挂载")
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.green)
+                    .disabled(isDisabled)
+                }
+                
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .disabled(isDisabled)
             }
             .frame(width: 160, alignment: .center)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.3), lineWidth: 1)
             .background(RoundedRectangle(cornerRadius: 8).fill(disk.isMounted ? Color.green.opacity(0.05) : Color.clear)))
+        .opacity(isDisabled ? 0.6 : 1.0)
     }
 }
 
