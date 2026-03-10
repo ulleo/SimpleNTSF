@@ -171,6 +171,7 @@ class DiskManager: ObservableObject {
                 return
             }
             
+            // 第一步：快速解析配置，先显示列表
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
@@ -193,29 +194,62 @@ class DiskManager: ObservableObject {
                         continue
                     }
                     
-                    // 在后台获取设备信息
-                    let device = self.findDevice(byUUID: uuid)
-                    let volumeName = self.getVolumeName(byUUID: uuid)
-                    let actualMount = self.getActualMountPoint(device: device)
-                    let isMounted = actualMount != nil
-                    
+                    // 先创建占位数据，快速显示
                     newDisks.append(DiskInfo(
                         uuid: uuid,
-                        volumeName: volumeName,
+                        volumeName: "加载中...",
                         mountPoint: mountPoint,
-                        device: device,
-                        currentMount: actualMount ?? "-",
-                        isMounted: isMounted
+                        device: "查询中",
+                        currentMount: "-",
+                        isMounted: false
                     ))
                 }
             }
             
-            // 在主线程更新 UI
+            // 在主线程先显示列表
             DispatchQueue.main.async {
                 self.disks = newDisks
-                logger.info("加载配置完成，共 \(self.disks.count) 个硬盘")
-                self.refreshDiskUsages()
+                logger.info("加载配置完成，共 \(self.disks.count) 个硬盘（设备信息待更新）")
+                
+                // 第二步：并行获取所有设备信息
+                self.refreshAllDiskInfo()
             }
+        }
+    }
+    
+    func refreshAllDiskInfo() {
+        // 并行获取所有硬盘的设备信息
+        let dispatchGroup = DispatchGroup()
+        let infoLock = NSLock()
+        var updatedInfo: [UUID: (device: String, volumeName: String, isMounted: Bool, currentMount: String)] = [:]
+        
+        for disk in self.disks {
+            dispatchGroup.enter()
+            DispatchQueue.global().async {
+                let device = self.findDevice(byUUID: disk.uuid)
+                let volumeName = self.getVolumeName(byUUID: disk.uuid)
+                let actualMount = self.getActualMountPoint(device: device)
+                let isMounted = actualMount != nil
+                
+                infoLock.lock()
+                updatedInfo[disk.id] = (device, volumeName, isMounted, actualMount ?? "-")
+                infoLock.unlock()
+                dispatchGroup.leave()
+            }
+        }
+        
+        dispatchGroup.notify(queue: .main) {
+            // 更新所有硬盘的设备信息
+            for i in 0..<self.disks.count {
+                if let info = updatedInfo[self.disks[i].id] {
+                    self.disks[i].device = info.device
+                    self.disks[i].volumeName = info.volumeName
+                    self.disks[i].isMounted = info.isMounted
+                    self.disks[i].currentMount = info.currentMount
+                }
+            }
+            logger.info("所有硬盘设备信息已更新")
+            self.refreshDiskUsages()
         }
     }
     
@@ -403,43 +437,32 @@ class DiskManager: ObservableObject {
         }
     }
     
-    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5, completion: (() -> Void)? = nil) {
+    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5) {
         // 延时后在后台更新指定硬盘的挂载状态，避免系统状态未及时刷新
         DispatchQueue.global().asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
-            guard let self = self else {
-                completion?()
-                return
-            }
+            guard let self = self else { return }
             
             // 在后台执行 shell 命令
-            var updatedDevice = ""
-            var updatedVolumeName = ""
-            var updatedIsMounted = false
-            var updatedCurrentMount = "-"
+            let device = self.findDevice(byUUID: uuid)
+            let volumeName = self.getVolumeName(byUUID: uuid)
+            let actualMount = self.getActualMountPoint(device: device)
+            let isMounted = actualMount != nil
+            let currentMount = actualMount ?? "-"
             
-            for disk in self.disks {
-                if disk.uuid == uuid {
-                    updatedDevice = self.findDevice(byUUID: uuid)
-                    updatedVolumeName = self.getVolumeName(byUUID: uuid)
-                    let actualMount = self.getActualMountPoint(device: updatedDevice)
-                    updatedIsMounted = actualMount != nil
-                    updatedCurrentMount = actualMount ?? "-"
-                    break
-                }
-            }
+            logger.info("更新状态：uuid=\(uuid.prefix(8))... device=\(device) mounted=\(isMounted) mount=\(currentMount)")
             
             // 只在主线程更新 UI
             DispatchQueue.main.async {
-                for i in 0..<self.disks.count {
-                    if self.disks[i].uuid == uuid {
-                        self.disks[i].device = updatedDevice
-                        self.disks[i].volumeName = updatedVolumeName
-                        self.disks[i].isMounted = updatedIsMounted
-                        self.disks[i].currentMount = updatedCurrentMount
-                        break
-                    }
+                // 使用 firstIndex 查找，确保找到正确的硬盘
+                if let index = self.disks.firstIndex(where: { $0.uuid == uuid }) {
+                    self.disks[index].device = device
+                    self.disks[index].volumeName = volumeName
+                    self.disks[index].isMounted = isMounted
+                    self.disks[index].currentMount = currentMount
+                    logger.info("状态已更新：\(self.disks[index].device)")
+                } else {
+                    logger.warning("未找到 uuid=\(uuid.prefix(8))... 的硬盘")
                 }
-                completion?()
             }
         }
     }
