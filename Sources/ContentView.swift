@@ -162,6 +162,9 @@ class DiskManager: ObservableObject {
             self.fileLock.lock()
             defer { self.fileLock.unlock() }
             
+            // 复制当前 disks 快照，保留现有状态
+            let oldDisksSnapshot: [DiskInfo] = DispatchQueue.main.sync { self.disks }
+            
             var newDisks: [DiskInfo] = []
             
             guard FileManager.default.fileExists(atPath: self.configPath) else { return }
@@ -171,7 +174,7 @@ class DiskManager: ObservableObject {
                 return
             }
             
-            // 第一步：快速解析配置，先显示列表
+            // 第一步：解析配置，从旧数据中保留所有状态
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
@@ -194,24 +197,26 @@ class DiskManager: ObservableObject {
                         continue
                     }
                     
-                    // 先创建占位数据，快速显示
+                    // 从旧数据中查找并保留所有状态
+                    let oldDisk = oldDisksSnapshot.first(where: { $0.uuid == uuid })
                     newDisks.append(DiskInfo(
                         uuid: uuid,
-                        volumeName: "加载中...",
+                        volumeName: oldDisk?.volumeName ?? "加载中...",
                         mountPoint: mountPoint,
-                        device: "查询中",
-                        currentMount: "-",
-                        isMounted: false
+                        device: oldDisk?.device ?? "查询中",
+                        currentMount: oldDisk?.currentMount ?? "-",
+                        isMounted: oldDisk?.isMounted ?? false,
+                        usage: oldDisk?.usage  // 保留旧的使用量值
                     ))
                 }
             }
             
-            // 在主线程先显示列表
+            // 在主线程更新列表
             DispatchQueue.main.async {
                 self.disks = newDisks
-                logger.info("加载配置完成，共 \(self.disks.count) 个硬盘（设备信息待更新）")
+                logger.info("加载配置完成，共 \(self.disks.count) 个硬盘")
                 
-                // 第二步：并行获取所有设备信息
+                // 第二步：并行刷新所有设备信息（后台异步，不阻塞 UI）
                 self.refreshAllDiskInfo()
             }
         }
@@ -417,17 +422,32 @@ class DiskManager: ObservableObject {
     }
     
     func refreshDiskUsages() {
-        // 并行异步获取所有已挂载磁盘的使用量
+        // 并行异步获取所有已挂载磁盘的使用量，同时清空未挂载磁盘的使用量
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
             
             // 在主线程获取 disks 快照，确保使用最新的 isMounted 状态
             var disksToQuery: [(id: UUID, mountPoint: String)] = []
+            var unmountedDiskIds: [UUID] = []
             DispatchQueue.main.sync {
                 for disk in self.disks {
                     if disk.isMounted {
                         disksToQuery.append((disk.id, disk.mountPoint))
+                    } else {
+                        unmountedDiskIds.append(disk.id)
                     }
+                }
+            }
+            
+            // 先清空未挂载磁盘的使用量
+            if !unmountedDiskIds.isEmpty {
+                DispatchQueue.main.async {
+                    for i in 0..<self.disks.count {
+                        if unmountedDiskIds.contains(self.disks[i].id) && self.disks[i].usage != nil {
+                            self.disks[i].usage = nil
+                        }
+                    }
+                    self.objectWillChange.send()
                 }
             }
             
@@ -463,7 +483,7 @@ class DiskManager: ObservableObject {
         }
     }
     
-    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5) {
+    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5, refreshUsageAfterUpdate: Bool = true) {
         // 延时后在后台更新指定硬盘的挂载状态，避免系统状态未及时刷新
         DispatchQueue.global().asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
             guard let self = self else { return }
@@ -488,6 +508,11 @@ class DiskManager: ObservableObject {
                     // 强制触发 SwiftUI 更新
                     self.objectWillChange.send()
                     logger.info("状态已更新：\(self.disks[index].device)")
+                    
+                    // 状态更新完成后，刷新使用量（只刷新已挂载的磁盘）
+                    if refreshUsageAfterUpdate && isMounted {
+                        self.refreshDiskUsages()
+                    }
                 } else {
                     logger.warning("未找到 uuid=\(uuid.prefix(8))... 的硬盘")
                 }
@@ -794,9 +819,10 @@ struct ContentView: View {
                                     DispatchQueue.main.async {
                                         loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
-                                            // 后台刷新状态和使用量，不影响用户操作
-                                            manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
-                                            manager.refreshDiskUsages()
+                                            // 延时后完整刷新所有硬盘状态
+                                            DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
+                                                manager.loadConfig()
+                                            }
                                         } else {
                                             alertMessage = result.message
                                             alertIsError = true
@@ -861,9 +887,10 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        DispatchQueue.main.async {
+                        // 等待系统状态刷新后再重载
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             isBatchOperating = false
-                            manager.loadConfig()  // 批量操作后重载，因为多个硬盘状态变化
+                            manager.loadConfig()
                         }
                     }
                 }) {
@@ -881,9 +908,10 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        DispatchQueue.main.async {
+                        // 等待系统状态刷新后再重载
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             isBatchOperating = false
-                            manager.loadConfig()  // 批量操作后重载，因为多个硬盘状态变化
+                            manager.loadConfig()
                         }
                     }
                 }) {
@@ -963,8 +991,10 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 后台刷新状态，不影响用户操作
-                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
+                                // 延时后完整刷新所有硬盘状态
+                                DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
+                                    manager.loadConfig()
+                                }
                             } else {
                                 alertMessage = result.message
                                 alertIsError = true
@@ -999,9 +1029,10 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 后台刷新状态和使用量，不影响用户操作
-                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
-                                manager.refreshDiskUsages()
+                                // 延时后完整刷新所有硬盘状态
+                                DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
+                                    manager.loadConfig()
+                                }
                             } else {
                                 alertMessage = "挂载失败：" + mountResult.message
                                 alertIsError = true
