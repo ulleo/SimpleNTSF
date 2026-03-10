@@ -23,7 +23,7 @@ enum Constants {
 
 // MARK: - Data Models
 
-struct DiskInfo: Identifiable, Codable {
+struct DiskInfo: Identifiable, Codable, Equatable {
     var uuid: String
     var volumeName: String  // 硬盘名称
     var mountPoint: String
