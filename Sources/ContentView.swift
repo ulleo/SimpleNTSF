@@ -741,14 +741,12 @@ struct ContentView: View {
                                 DispatchQueue.global().async {
                                     let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                                     DispatchQueue.main.async {
+                                        loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
-                                            // 先刷新状态，完成后再获取使用量，最后移除 loading
-                                            manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5) {
-                                                manager.refreshDiskUsages()
-                                                loadingStates.removeValue(forKey: disk.uuid)
-                                            }
+                                            // 后台刷新状态和使用量，不影响用户操作
+                                            manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
+                                            manager.refreshDiskUsages()
                                         } else {
-                                            loadingStates.removeValue(forKey: disk.uuid)
                                             alertMessage = result.message
                                             alertIsError = true
                                             showingAlert = true
@@ -912,13 +910,11 @@ struct ContentView: View {
                     DispatchQueue.global().async {
                         let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
                         DispatchQueue.main.async {
+                            loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 刷新状态完成后移除 loading
-                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5) {
-                                    loadingStates.removeValue(forKey: disk.uuid)
-                                }
+                                // 后台刷新状态，不影响用户操作
+                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
                             } else {
-                                loadingStates.removeValue(forKey: disk.uuid)
                                 alertMessage = result.message
                                 alertIsError = true
                                 showingAlert = true
@@ -950,14 +946,12 @@ struct ContentView: View {
                         // 再挂载到目标位置
                         let mountResult = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         DispatchQueue.main.async {
+                            loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 刷新状态完成后获取使用量，最后移除 loading
-                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5) {
-                                    manager.refreshDiskUsages()
-                                    loadingStates.removeValue(forKey: disk.uuid)
-                                }
+                                // 后台刷新状态和使用量，不影响用户操作
+                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
+                                manager.refreshDiskUsages()
                             } else {
-                                loadingStates.removeValue(forKey: disk.uuid)
                                 alertMessage = "挂载失败：" + mountResult.message
                                 alertIsError = true
                                 showingAlert = true
