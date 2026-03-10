@@ -11,7 +11,7 @@ private let logger = Logger(subsystem: "com.simplentfs.app", category: "DiskMana
 enum Constants {
     static let configDirName = ".SimpleNTFS"
     static let configFileName = "ntfs-disks.conf"
-    static let mountNTFSPath = "/opt/homebrew/sbin/mount_ntfs"
+    static let mountNTFSPath = "/opt/homebrew/bin/ntfs-3g"
     static let diskUtilPath = "/usr/sbin/diskutil"
     static let sudoersFilePath = "/etc/sudoers.d/simplentfs"
     
@@ -637,7 +637,18 @@ class DiskManager: ObservableObject {
         
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        task.arguments = ["-n", Constants.mountNTFSPath, "/dev/" + device, resolvedMountPoint]
+        // ntfs-3g 完整挂载命令：设备 挂载点 -o local -o auto_xattr -o volname="..."
+        // 从挂载点路径提取卷名（最后一段）
+        let volumeName = (resolvedMountPoint as NSString).lastPathComponent
+        task.arguments = [
+            "-n",
+            Constants.mountNTFSPath,
+            "/dev/" + device,
+            resolvedMountPoint,
+            "-o", "local",
+            "-o", "auto_xattr",
+            "-o", "volname=\(volumeName)"
+        ]
         
         let pipe = Pipe()
         task.standardOutput = pipe
