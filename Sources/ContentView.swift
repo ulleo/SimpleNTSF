@@ -242,10 +242,10 @@ class DiskManager: ObservableObject {
     }
     
     func refreshAllDiskInfo() {
-        // 并行获取所有硬盘的设备信息
+        // 并行获取所有硬盘的设备信息和使用量
         let dispatchGroup = DispatchGroup()
         let infoLock = NSLock()
-        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String)] = [:]
+        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?)] = [:]
         
         // 复制当前 disks 快照，避免遍历时数组变化
         let disksSnapshot = self.disks
@@ -260,10 +260,16 @@ class DiskManager: ObservableObject {
                 let actualMount = self.getActualMountPoint(device: device)
                 let isMounted = actualMount != nil
                 
-                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), mount=\(actualMount ?? "-")")
+                // 如果已挂载，获取使用量
+                var usage: String? = nil
+                if isMounted, let mount = actualMount {
+                    usage = self.getDiskUsage(mountPoint: mount)
+                }
+                
+                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), usage=\(usage ?? "-")")
                 
                 infoLock.lock()
-                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-")
+                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage)
                 infoLock.unlock()
                 dispatchGroup.leave()
             }
@@ -272,37 +278,25 @@ class DiskManager: ObservableObject {
         dispatchGroup.notify(queue: .main) {
             print("设备信息查询完成，开始更新 UI")
             
-            // 创建新数组替换旧数组，强制 SwiftUI 重新渲染
-            var updatedDisks = self.disks
-            var hasChanges = false
-            
-            for (uuid, info) in updatedInfo {
-                if let index = updatedDisks.firstIndex(where: { $0.uuid == uuid }) {
-                    let oldDevice = updatedDisks[index].device
-                    let oldMounted = updatedDisks[index].isMounted
-                    if oldDevice != info.device || oldMounted != info.isMounted {
-                        hasChanges = true
-                        print("✅ 更新硬盘 \(uuid.prefix(8)): \(oldDevice)/\(oldMounted) -> \(info.device)/\(info.isMounted)")
-                    }
-                    updatedDisks[index].device = info.device
-                    updatedDisks[index].volumeName = info.volumeName
-                    updatedDisks[index].isMounted = info.isMounted
-                    updatedDisks[index].currentMount = info.currentMount
-                } else {
-                    print("⚠️ 未找到 UUID=\(uuid.prefix(8)) 的硬盘")
+            // 创建全新数组，一次性更新所有数据
+            let newDisks = disksSnapshot.map { oldDisk -> DiskInfo in
+                if let info = updatedInfo[oldDisk.uuid] {
+                    print("✅ 更新硬盘 \(oldDisk.uuid.prefix(8)): \(oldDisk.device)/\(oldDisk.isMounted) -> \(info.device)/\(info.isMounted), usage=\(info.usage ?? "nil")")
+                    return DiskInfo(
+                        uuid: oldDisk.uuid,
+                        volumeName: info.volumeName,
+                        mountPoint: oldDisk.mountPoint,
+                        device: info.device,
+                        currentMount: info.currentMount,
+                        isMounted: info.isMounted,
+                        usage: info.usage
+                    )
                 }
+                return oldDisk
             }
             
-            if hasChanges {
-                // 替换整个数组，强制 SwiftUI 重新渲染
-                self.disks = updatedDisks
-                print("所有硬盘设备信息已更新，disks 数组已替换")
-            } else {
-                print("⚠️ 没有硬盘信息被更新")
-            }
-            
-            // 使用更新后的 disks 状态获取使用量（并行）
-            self.refreshDiskUsages()
+            self.disks = newDisks
+            print("所有硬盘设备信息已更新，disks 数组已替换")
         }
     }
     
