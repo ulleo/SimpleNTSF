@@ -928,13 +928,13 @@ struct ContentView: View {
             HStack {
                 Button(action: { showingAddDialog = true }) {
                     HStack {
-                        if isBatchOperating || loadingStates.values.contains(true) {
-                            ProgressView().scaleEffect(0.8)
-                        } else {
-                            Label("新增硬盘", systemImage: "plus")
-                        }
+                        Label("新增硬盘", systemImage: "plus")
+                            .opacity(isBatchOperating || loadingStates.values.contains(true) ? 0 : 1)
+                            .overlay(
+                                ProgressView().scaleEffect(0.8)
+                                    .opacity(isBatchOperating || loadingStates.values.contains(true) ? 1 : 0)
+                            )
                     }
-                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -946,13 +946,13 @@ struct ContentView: View {
                     manager.loadConfig()
                 }) {
                     HStack {
-                        if isRefreshing {
-                            ProgressView().scaleEffect(0.7)
-                        } else {
-                            Label("刷新", systemImage: "arrow.clockwise")
-                        }
+                        Label("刷新", systemImage: "arrow.clockwise")
+                            .opacity(isRefreshing ? 0 : 1)
+                            .overlay(
+                                ProgressView().scaleEffect(0.7)
+                                    .opacity(isRefreshing ? 1 : 0)
+                            )
                     }
-                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
                 Spacer()
@@ -969,13 +969,13 @@ struct ContentView: View {
                     }
                 }) {
                     HStack {
-                        if isBatchOperating {
-                            ProgressView().scaleEffect(0.8)
-                        } else {
-                            Label("全部挂载", systemImage: "externaldrive.fill")
-                        }
+                        Label("全部挂载", systemImage: "externaldrive.fill")
+                            .opacity(isBatchOperating ? 0 : 1)
+                            .overlay(
+                                ProgressView().scaleEffect(0.8)
+                                    .opacity(isBatchOperating ? 1 : 0)
+                            )
                     }
-                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -991,13 +991,13 @@ struct ContentView: View {
                     }
                 }) {
                     HStack {
-                        if isBatchOperating {
-                            ProgressView().scaleEffect(0.8)
-                        } else {
-                            Label("全部卸载", systemImage: "eject.fill")
-                        }
+                        Label("全部卸载", systemImage: "eject.fill")
+                            .opacity(isBatchOperating ? 0 : 1)
+                            .overlay(
+                                ProgressView().scaleEffect(0.8)
+                                    .opacity(isBatchOperating ? 1 : 0)
+                            )
                     }
-                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
             }
