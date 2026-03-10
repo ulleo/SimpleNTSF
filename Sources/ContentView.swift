@@ -909,7 +909,7 @@ struct ContentView: View {
             // Disk list
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(manager.disks) { disk in
+                    ForEach(manager.disks, id: \.uuid) { disk in
                         DiskRow(
                             disk: disk,
                             isLoading: loadingStates[disk.uuid] ?? false,
