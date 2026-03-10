@@ -1137,9 +1137,6 @@ struct ContentView: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             manager.loadConfig()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            manager.loadConfig()
             self.isRefreshing = false
             completion?()
         }
