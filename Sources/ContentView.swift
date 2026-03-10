@@ -216,10 +216,10 @@ class DiskManager: ObservableObject {
                     let oldDisk = oldDisksSnapshot.first(where: { $0.uuid == uuid })
                     let newDisk = DiskInfo(
                         uuid: uuid,
-                        volumeName: oldDisk?.volumeName ?? "加载中...",
+                        volumeName: oldDisk?.volumeName ?? "读取中…",
                         mountPoint: mountPoint,
-                        device: oldDisk?.device ?? "查询中",
-                        currentMount: oldDisk?.currentMount ?? "-",
+                        device: oldDisk?.device ?? "读取中…",
+                        currentMount: oldDisk?.currentMount ?? "读取中…",
                         isMounted: oldDisk?.isMounted ?? false,
                         usage: oldDisk?.usage  // 保留旧的使用量值
                     )
@@ -296,6 +296,7 @@ class DiskManager: ObservableObject {
             }
             
             self.disks = newDisks
+            // @Published 赋值会自动触发通知，无需手动调用 objectWillChange.send()
             print("所有硬盘设备信息已更新，disks 数组已替换")
         }
     }
@@ -477,7 +478,7 @@ class DiskManager: ObservableObject {
                             self.disks[i].usage = nil
                         }
                     }
-                    self.objectWillChange.send()
+                    // @Published 赋值会自动触发通知
                 }
             }
             
@@ -497,18 +498,14 @@ class DiskManager: ObservableObject {
             }
             
             dispatchGroup.notify(queue: .main) {
-                var hasChanges = false
                 for i in 0..<self.disks.count {
                     if let usage = updatedUsages[self.disks[i].id] {
                         if self.disks[i].usage != usage {
                             self.disks[i].usage = usage
-                            hasChanges = true
                         }
                     }
                 }
-                if hasChanges {
-                    self.objectWillChange.send()
-                }
+                // disks 被修改后，@Published 会自动触发通知
             }
         }
     }
@@ -535,8 +532,7 @@ class DiskManager: ObservableObject {
                     self.disks[index].volumeName = volumeName
                     self.disks[index].isMounted = isMounted
                     self.disks[index].currentMount = currentMount
-                    // 强制触发 SwiftUI 更新
-                    self.objectWillChange.send()
+                    // @Published 赋值会自动触发通知
                     logger.info("状态已更新：\(self.disks[index].device)")
                     
                     // 状态更新完成后，刷新使用量（只刷新已挂载的磁盘）
@@ -1083,8 +1079,11 @@ struct ContentView: View {
         } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
-            print("调用 manager.loadConfig()")
-            manager.loadConfig()
+            // 延时一点，确保 SwiftUI 完全准备好
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                print("调用 manager.loadConfig()")
+                manager.loadConfig()
+            }
         }
     }
     
@@ -1199,8 +1198,8 @@ struct DiskRow: View {
                 Text("目标：" + disk.mountPoint).font(.caption).foregroundColor(.secondary)
                 if let usage = disk.usage {
                     Text("用量：" + usage).font(.caption).foregroundColor(.blue)
-                } else if disk.isMounted {
-                    Text("用量：获取中...").font(.caption).foregroundColor(.secondary)
+                } else if disk.isMounted && disk.device != "读取中…" {
+                    Text("用量：获取中…").font(.caption).foregroundColor(.secondary)
                 } else {
                     Text("用量：-").font(.caption).foregroundColor(.gray)
                 }
