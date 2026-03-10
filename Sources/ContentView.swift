@@ -69,6 +69,7 @@ struct PhysicalDisk: Identifiable, Codable {
 
 class DiskManager: ObservableObject {
     @Published var disks: [DiskInfo] = []
+    @Published var refreshFlag = false  // 强制刷新标志
     private let fileLock = NSLock()
     private var isLoading = false  // 防止重复加载
     
@@ -293,8 +294,9 @@ class DiskManager: ObservableObject {
             
             self.objectWillChange.send()
             self.disks = newDisks
+            self.refreshFlag.toggle()
             // @Published 赋值会自动触发通知，无需手动调用 objectWillChange.send()
-            print("所有硬盘设备信息已更新，disks 数组已替换")
+            print("所有硬盘设备信息已更新，disks 数组已替换，refreshFlag=\(self.refreshFlag)")
         }
     }
     
@@ -351,8 +353,9 @@ class DiskManager: ObservableObject {
             
             self.objectWillChange.send()
             self.disks = newDisks
+            self.refreshFlag.toggle()
             // @Published 赋值后会自动触发通知
-            print("所有硬盘设备信息已更新，disks 数组已替换")
+            print("所有硬盘设备信息已更新，disks 数组已替换，refreshFlag=\(self.refreshFlag)")
         }
     }
     
@@ -568,6 +571,7 @@ class DiskManager: ObservableObject {
                 }
                 if hasChanges {
                     self.disks = newDisks
+                    self.refreshFlag.toggle()
                 }
             }
         }
@@ -845,6 +849,7 @@ extension Sequence {
 
 struct ContentView: View {
     @StateObject private var manager = DiskManager()
+    @State private var refreshTrigger = false  // 强制刷新标志
     @State private var showingAddDialog = false
     @State private var newUUID = ""
     @State private var newMountPoint = ""
@@ -867,6 +872,10 @@ struct ContentView: View {
     @State private var isBatchOperating = false  // 批量操作中
     
     var body: some View {
+        // 强制刷新标志
+        let _ = refreshTrigger
+        let _ = manager.refreshFlag
+        
         VStack(spacing: 0) {
             // Header with config button
             VStack(spacing: 8) {
