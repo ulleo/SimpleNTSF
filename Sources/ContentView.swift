@@ -856,33 +856,38 @@ struct ContentView: View {
                         .font(.title2.bold())
                     Spacer()
                     
+                    // macFUSE 链接
+                    Button(action: {
+                        if let url = URL(string: "https://macfuse.github.io/") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                            Text("需要 macFUSE 支持").font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    
+                    // 权限配置按钮
                     if !isPasswordFree {
                         Button(action: configureSudoers) {
-                            HStack {
-                                Image(systemName: "lock.fill").foregroundColor(.orange)
-                                Text("配置免密码权限").font(.caption)
-                            }
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Color.orange.opacity(0.2)).cornerRadius(6)
+                            Text("配置权限").font(.caption)
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(Color.orange.opacity(0.2)).cornerRadius(6)
                         }
                         .disabled(isConfiguring)
                     } else {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                            Text("权限已配置").font(.caption).foregroundColor(.green)
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Color.green.opacity(0.2)).cornerRadius(6)
+                        Text("已配置权限")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Color.green.opacity(0.2)).cornerRadius(6)
                     }
                 }
                 
                 if let result = setupResult {
                     Text(result).font(.caption).foregroundColor(setupSuccess ? .green : .red)
-                }
-                
-                HStack(spacing: 4) {
-                    Image(systemName: "info.circle.fill").foregroundColor(.blue)
-                    Text("需要 macFUSE 支持").font(.caption).foregroundColor(.secondary)
                 }
             }
             .padding(.top).padding(.bottom, 10)
