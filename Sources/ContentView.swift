@@ -842,6 +842,10 @@ struct ContentView: View {
     @State private var loadingStates: [String: Bool] = [:]  // UUID -> isLoading
     @State private var isBatchOperating = false  // 批量操作中
     
+    private var hasLoading: Bool {
+        loadingStates.values.contains(true)
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
             // Header with config button
@@ -894,7 +898,9 @@ struct ContentView: View {
                             isBatchOperating: isBatchOperating,
                             onMount: {
                                 guard !isBatchOperating else { return }
-                                loadingStates[disk.uuid] = true
+                                DispatchQueue.main.async {
+                                    loadingStates[disk.uuid] = true
+                                }
                                 DispatchQueue.global().async {
                                     let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                                     DispatchQueue.main.async {
@@ -954,17 +960,17 @@ struct ContentView: View {
                 Button(action: { showingAddDialog = true }) {
                     HStack {
                         Label("新增硬盘", systemImage: "plus")
-                            .opacity(isBatchOperating || loadingStates.values.contains(true) ? 0 : 1)
+                            .opacity(isBatchOperating || hasLoading ? 0 : 1)
                             .overlay(
                                 ProgressView().scaleEffect(0.8)
-                                    .opacity(isBatchOperating || loadingStates.values.contains(true) ? 1 : 0)
+                                    .opacity(isBatchOperating || hasLoading ? 1 : 0)
                             )
                     }
                     .frame(width: 100)
                 }
                 .buttonStyle(.bordered)
                 .tint(.blue)
-                .disabled(isBatchOperating || loadingStates.values.contains(true))
+                .disabled(isBatchOperating || hasLoading)
                 Button(action: {
                     print("\n=== 手动刷新按钮被点击 ===")
                     print("刷新前 disks: \(manager.disks.count) 个")
@@ -985,7 +991,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.gray)
-                .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
+                .disabled(isBatchOperating || hasLoading || isRefreshing)
                 Spacer()
                 Button(action: {
                     isBatchOperating = true
@@ -1011,7 +1017,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.green)
-                .disabled(isBatchOperating || loadingStates.values.contains(true))
+                .disabled(isBatchOperating || hasLoading)
                 Button(action: {
                     isBatchOperating = true
                     DispatchQueue.global().async {
@@ -1036,7 +1042,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.orange)
-                .disabled(isBatchOperating || loadingStates.values.contains(true))
+                .disabled(isBatchOperating || hasLoading)
             }
             .padding()
         }
