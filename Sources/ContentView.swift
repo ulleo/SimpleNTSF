@@ -239,65 +239,7 @@ class DiskManager: ObservableObject {
     }
     
     func refreshAllDiskInfo() {
-        // 并行获取所有硬盘的设备信息和使用量
-        let dispatchGroup = DispatchGroup()
-        let infoLock = NSLock()
-        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?)] = [:]
-        
-        // 复制当前 disks 快照，避免遍历时数组变化
-        let disksSnapshot = self.disks
-        
-        print("🔄 开始刷新 \(disksSnapshot.count) 个硬盘的设备信息")
-        
-        for disk in disksSnapshot {
-            dispatchGroup.enter()
-            DispatchQueue.global().async {
-                let device = self.findDevice(byUUID: disk.uuid)
-                let volumeName = self.getVolumeName(byUUID: disk.uuid)
-                let actualMount = self.getActualMountPoint(device: device)
-                let isMounted = actualMount != nil
-                
-                // 如果已挂载，获取使用量
-                var usage: String? = nil
-                if isMounted, let mount = actualMount {
-                    usage = self.getDiskUsage(mountPoint: mount)
-                }
-                
-                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), usage=\(usage ?? "-")")
-                
-                infoLock.lock()
-                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage)
-                infoLock.unlock()
-                dispatchGroup.leave()
-            }
-        }
-        
-        dispatchGroup.notify(queue: .main) {
-            print("设备信息查询完成，开始更新 UI")
-            
-            // 创建全新数组，一次性更新所有数据
-            let newDisks = disksSnapshot.map { oldDisk -> DiskInfo in
-                if let info = updatedInfo[oldDisk.uuid] {
-                    print("✅ 更新硬盘 \(oldDisk.uuid.prefix(8)): \(oldDisk.device)/\(oldDisk.isMounted) -> \(info.device)/\(info.isMounted), usage=\(info.usage ?? "nil")")
-                    return DiskInfo(
-                        uuid: oldDisk.uuid,
-                        volumeName: info.volumeName,
-                        mountPoint: oldDisk.mountPoint,
-                        device: info.device,
-                        currentMount: info.currentMount,
-                        isMounted: info.isMounted,
-                        usage: info.usage
-                    )
-                }
-                return oldDisk
-            }
-            
-            self.objectWillChange.send()
-            self.disks = newDisks
-            self.refreshFlag.toggle()
-            // @Published 赋值会自动触发通知，无需手动调用 objectWillChange.send()
-            print("所有硬盘设备信息已更新，disks 数组已替换，refreshFlag=\(self.refreshFlag)")
-        }
+        refreshAllDiskInfoWithCompletion(disks: self.disks)
     }
     
     func refreshAllDiskInfoWithCompletion(disks: [DiskInfo]) {
