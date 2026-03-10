@@ -856,33 +856,60 @@ struct ContentView: View {
                         .font(.title2.bold())
                     Spacer()
                     
-                    // macFUSE 链接
-                    Button(action: {
-                        if let url = URL(string: "https://macfuse.github.io/") {
-                            NSWorkspace.shared.open(url)
+                    HStack(spacing: 6) {
+                        // macFUSE 链接
+                        Button(action: {
+                            if let url = URL(string: "https://macfuse.github.io/") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "info.circle.fill")
+                                Text("需要 macFUSE 支持")
+                            }
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(6)
                         }
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
-                            Text("需要 macFUSE 支持").font(.caption).foregroundColor(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    
-                    // 权限配置按钮
-                    if !isPasswordFree {
-                        Button(action: configureSudoers) {
-                            Text("配置权限").font(.caption)
-                                .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(Color.orange.opacity(0.2)).cornerRadius(6)
-                        }
-                        .disabled(isConfiguring)
-                    } else {
-                        Text("已配置权限")
+                        .buttonStyle(.plain)
+                        
+                        // 分隔符
+                        Text("｜")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                            .padding(.horizontal, 2)
+                        
+                        // 权限配置按钮
+                        if !isPasswordFree {
+                            Button(action: configureSudoers) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lock.fill")
+                                    Text("配置权限")
+                                }
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Color.orange.opacity(0.15))
+                                .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isConfiguring)
+                        } else {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text("已配置权限")
+                            }
                             .font(.caption)
                             .foregroundColor(.green)
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Color.green.opacity(0.2)).cornerRadius(6)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.green.opacity(0.15))
+                            .cornerRadius(6)
+                        }
                     }
                 }
                 
