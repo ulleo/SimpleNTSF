@@ -1249,8 +1249,15 @@ struct ContentView: View {
                         self.checkPasswordFreeStatus()
                     } else {
                         setupSuccess = false
-                        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                        let errorMsg = String(data: errorData, encoding: .utf8) ?? "未知错误"
+                        // 安全读取错误输出，避免崩溃
+                        var errorMsg = "配置失败（退出码：\(task.terminationStatus)）"
+                        let errorData = errorPipe.fileHandleForReading.availableData
+                        if !errorData.isEmpty {
+                            let msg = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let msg = msg, !msg.isEmpty {
+                                errorMsg = msg
+                            }
+                        }
                         print("❌ 配置失败：terminationStatus=\(task.terminationStatus), fileExists=\(fileExists), error=\(errorMsg)")
                         setupResult = "❌ 配置失败：" + errorMsg
                         logger.error("Sudoers 配置失败")
