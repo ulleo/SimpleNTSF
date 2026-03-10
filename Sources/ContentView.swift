@@ -24,7 +24,6 @@ enum Constants {
 // MARK: - Data Models
 
 struct DiskInfo: Identifiable, Codable {
-    let id: UUID
     var uuid: String
     var volumeName: String  // 硬盘名称
     var mountPoint: String
@@ -33,8 +32,9 @@ struct DiskInfo: Identifiable, Codable {
     var isMounted: Bool
     var usage: String?  // 如 "80Gi / 931Gi (9%)"
     
-    init(id: UUID = UUID(), uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil) {
-        self.id = id
+    var id: String { uuid }  // 使用 uuid 作为稳定标识符
+    
+    init(uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil) {
         self.uuid = uuid
         self.volumeName = volumeName
         self.mountPoint = mountPoint
@@ -518,8 +518,8 @@ class DiskManager: ObservableObject {
             guard let self = self else { return }
             
             // 在主线程获取 disks 快照，确保使用最新的 isMounted 状态
-            var disksToQuery: [(id: UUID, mountPoint: String)] = []
-            var unmountedDiskIds: [UUID] = []
+            var disksToQuery: [(id: String, mountPoint: String)] = []
+            var unmountedDiskIds: [String] = []
             DispatchQueue.main.sync {
                 for disk in self.disks {
                     if disk.isMounted {
@@ -542,7 +542,7 @@ class DiskManager: ObservableObject {
                 }
             }
             
-            var updatedUsages: [UUID: String?] = [:]
+            var updatedUsages: [String: String?] = [:]
             let dispatchGroup = DispatchGroup()
             let usageLock = NSLock()
             
