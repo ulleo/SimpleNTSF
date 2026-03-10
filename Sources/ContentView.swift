@@ -923,8 +923,8 @@ struct ContentView: View {
                                         loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
                                             // 延时后刷新所有硬盘状态
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                                                manager.refreshAllDiskInfo()
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                                manager.loadConfig()
                                             }
                                         } else {
                                             alertMessage = result.message
@@ -997,10 +997,10 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        // 等待系统状态刷新后刷新所有硬盘状态
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        // 等待系统状态刷新后重新加载配置
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                             isBatchOperating = false
-                            manager.refreshAllDiskInfo()
+                            manager.loadConfig()
                         }
                     }
                 }) {
@@ -1018,10 +1018,10 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        // 等待系统状态刷新后刷新所有硬盘状态
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        // 等待系统状态刷新后重新加载配置
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                             isBatchOperating = false
-                            manager.refreshAllDiskInfo()
+                            manager.loadConfig()
                         }
                     }
                 }) {
@@ -1101,9 +1101,9 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 延时后刷新所有硬盘状态
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                                    manager.refreshAllDiskInfo()
+                                // 延时后重新加载配置
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                    manager.loadConfig()
                                 }
                             } else {
                                 alertMessage = result.message
@@ -1139,9 +1139,9 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 延时后刷新所有硬盘状态
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                                    manager.refreshAllDiskInfo()
+                                // 延时后重新加载配置
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                    manager.loadConfig()
                                 }
                             } else {
                                 alertMessage = "挂载失败：" + mountResult.message
@@ -1157,9 +1157,9 @@ struct ContentView: View {
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
             manager.loadConfig()
-            // 延时后刷新磁盘状态
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                manager.refreshAllDiskInfo()
+            // 延时后重新加载配置
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                manager.loadConfig()
             }
         }
     }
