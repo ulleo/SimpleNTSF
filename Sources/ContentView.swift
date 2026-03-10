@@ -221,9 +221,12 @@ class DiskManager: ObservableObject {
         // 并行获取所有硬盘的设备信息
         let dispatchGroup = DispatchGroup()
         let infoLock = NSLock()
-        var updatedInfo: [UUID: (device: String, volumeName: String, isMounted: Bool, currentMount: String)] = [:]
+        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String)] = [:]
         
-        for disk in self.disks {
+        // 复制当前 disks 快照，避免遍历时数组变化
+        let disksSnapshot = self.disks
+        
+        for disk in disksSnapshot {
             dispatchGroup.enter()
             DispatchQueue.global().async {
                 let device = self.findDevice(byUUID: disk.uuid)
@@ -232,7 +235,7 @@ class DiskManager: ObservableObject {
                 let isMounted = actualMount != nil
                 
                 infoLock.lock()
-                updatedInfo[disk.id] = (device, volumeName, isMounted, actualMount ?? "-")
+                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-")
                 infoLock.unlock()
                 dispatchGroup.leave()
             }
@@ -240,15 +243,22 @@ class DiskManager: ObservableObject {
         
         dispatchGroup.notify(queue: .main) {
             // 更新所有硬盘的设备信息
+            var hasChanges = false
             for i in 0..<self.disks.count {
-                if let info = updatedInfo[self.disks[i].id] {
+                if let info = updatedInfo[self.disks[i].uuid] {
                     self.disks[i].device = info.device
                     self.disks[i].volumeName = info.volumeName
                     self.disks[i].isMounted = info.isMounted
                     self.disks[i].currentMount = info.currentMount
+                    hasChanges = true
                 }
             }
-            logger.info("所有硬盘设备信息已更新")
+            
+            if hasChanges {
+                // 强制触发 SwiftUI 更新
+                self.objectWillChange.send()
+                logger.info("所有硬盘设备信息已更新")
+            }
             self.refreshDiskUsages()
         }
     }
@@ -459,6 +469,8 @@ class DiskManager: ObservableObject {
                     self.disks[index].volumeName = volumeName
                     self.disks[index].isMounted = isMounted
                     self.disks[index].currentMount = currentMount
+                    // 强制触发 SwiftUI 更新
+                    self.objectWillChange.send()
                     logger.info("状态已更新：\(self.disks[index].device)")
                 } else {
                     logger.warning("未找到 uuid=\(uuid.prefix(8))... 的硬盘")
