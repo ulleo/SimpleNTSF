@@ -26,15 +26,17 @@ enum Constants {
 struct DiskInfo: Identifiable, Codable {
     let id: UUID
     var uuid: String
+    var volumeName: String  // 硬盘名称
     var mountPoint: String
     var device: String
     var currentMount: String
     var isMounted: Bool
     var usage: String?  // 如 "80Gi / 931Gi (9%)"
     
-    init(id: UUID = UUID(), uuid: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil) {
+    init(id: UUID = UUID(), uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil) {
         self.id = id
         self.uuid = uuid
+        self.volumeName = volumeName
         self.mountPoint = mountPoint
         self.device = device
         self.currentMount = currentMount
@@ -187,11 +189,13 @@ class DiskManager: ObservableObject {
                 }
                 
                 let device = findDevice(byUUID: uuid)
+                let volumeName = getVolumeName(byUUID: uuid)
                 let actualMount = getActualMountPoint(device: device)
                 let isMounted = actualMount != nil
                 
                 disks.append(DiskInfo(
                     uuid: uuid,
+                    volumeName: volumeName,
                     mountPoint: mountPoint,
                     device: device,
                     currentMount: actualMount ?? "-",
@@ -236,6 +240,38 @@ class DiskManager: ObservableObject {
             logger.error("查找设备失败：\(error.localizedDescription)")
         }
         return "未找到"
+    }
+    
+    func getVolumeName(byUUID uuid: String) -> String {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
+        task.arguments = ["info", uuid]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            
+            for line in output.components(separatedBy: "\n") {
+                if line.contains("Volume Name:") {
+                    let parts = line.split(separator: ":")
+                    if parts.count == 2 {
+                        return String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    }
+                }
+            }
+        } catch {
+            logger.error("获取卷名失败：\(error.localizedDescription)")
+        }
+        return "未知"
     }
     
     func checkMounted(at mountPoint: String) -> Bool {
@@ -355,7 +391,9 @@ class DiskManager: ObservableObject {
         for i in 0..<disks.count {
             if disks[i].uuid == uuid {
                 let device = findDevice(byUUID: uuid)
+                let volumeName = getVolumeName(byUUID: uuid)
                 disks[i].device = device
+                disks[i].volumeName = volumeName
                 let actualMount = getActualMountPoint(device: device)
                 disks[i].isMounted = actualMount != nil
                 disks[i].currentMount = actualMount ?? "-"
@@ -595,6 +633,8 @@ struct ContentView: View {
     @State private var deletingDisk: DiskInfo?
     @State private var showingUnmountConfirm = false
     @State private var unmountingDisk: DiskInfo?
+    @State private var showingRemountConfirm = false
+    @State private var remountingDisk: DiskInfo?
     @State private var isConfiguring = false
     @State private var setupResult: String?
     @State private var setupSuccess = false
@@ -680,34 +720,8 @@ struct ContentView: View {
                             },
                             onRemount: {
                                 guard !isBatchOperating else { return }
-                                loadingStates[disk.uuid] = true
-                                DispatchQueue.global().async {
-                                    // 先卸载当前挂载
-                                    let unmountResult = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
-                                    guard unmountResult.success else {
-                                        DispatchQueue.main.async {
-                                            loadingStates.removeValue(forKey: disk.uuid)
-                                            alertMessage = "卸载失败：" + unmountResult.message
-                                            alertIsError = true
-                                            showingAlert = true
-                                        }
-                                        return
-                                    }
-                                    // 再挂载到目标位置
-                                    let mountResult = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
-                                    DispatchQueue.main.async {
-                                        loadingStates.removeValue(forKey: disk.uuid)
-                                        if mountResult.success {
-                                            // 从实际设备读取挂载状态
-                                            manager.updateDiskMountStatus(uuid: disk.uuid)
-                                            manager.refreshDiskUsages()
-                                        } else {
-                                            alertMessage = "挂载失败：" + mountResult.message
-                                            alertIsError = true
-                                            showingAlert = true
-                                        }
-                                    }
-                                }
+                                remountingDisk = disk
+                                showingRemountConfirm = true
                             },
                             onEdit: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
@@ -871,6 +885,43 @@ struct ContentView: View {
                 }
             }
         } message: { Text("确定要卸载此硬盘吗？") }
+        .alert("确认重新挂载", isPresented: $showingRemountConfirm) {
+            Button("取消", role: .cancel) { remountingDisk = nil }
+            Button("重新挂载", role: .destructive) {
+                if let disk = remountingDisk {
+                    loadingStates[disk.uuid] = true
+                    DispatchQueue.global().async {
+                        // 先卸载当前挂载
+                        let unmountResult = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
+                        guard unmountResult.success else {
+                            DispatchQueue.main.async {
+                                loadingStates.removeValue(forKey: disk.uuid)
+                                alertMessage = "卸载失败：" + unmountResult.message
+                                alertIsError = true
+                                showingAlert = true
+                                remountingDisk = nil
+                            }
+                            return
+                        }
+                        // 再挂载到目标位置
+                        let mountResult = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                        DispatchQueue.main.async {
+                            loadingStates.removeValue(forKey: disk.uuid)
+                            if mountResult.success {
+                                // 从实际设备读取挂载状态
+                                manager.updateDiskMountStatus(uuid: disk.uuid)
+                                manager.refreshDiskUsages()
+                            } else {
+                                alertMessage = "挂载失败：" + mountResult.message
+                                alertIsError = true
+                                showingAlert = true
+                            }
+                            remountingDisk = nil
+                        }
+                    }
+                }
+            }
+        } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
     }
     
     var isPasswordFree: Bool {
@@ -971,12 +1022,13 @@ struct DiskRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(disk.device).font(.system(.body, design: .monospaced))
+                    Text(disk.volumeName).font(.system(.body, design: .monospaced)).foregroundColor(.blue)
                     Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
                         .font(.caption).foregroundColor(disk.isMounted ? .green : .orange)
                 }
-                Text("UUID: " + String(disk.uuid.prefix(8)) + "...").font(.caption).foregroundColor(.secondary)
+                Text("UUID: " + disk.uuid).font(.caption).foregroundColor(.secondary)
             }
-            .frame(width: 280, alignment: .leading)
+            .frame(minWidth: 400, maxWidth: 400, alignment: .leading)
             
             VStack(alignment: .leading, spacing: 4) {
                 Text("当前：" + disk.currentMount).font(.system(.body, design: .monospaced))
