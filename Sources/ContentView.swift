@@ -850,6 +850,7 @@ extension Sequence {
 struct ContentView: View {
     @StateObject private var manager = DiskManager()
     @State private var refreshTrigger = false  // 强制刷新标志
+    @State private var isRefreshing = false  // 刷新中状态
     @State private var showingAddDialog = false
     @State private var newUUID = ""
     @State private var newMountPoint = ""
@@ -934,15 +935,7 @@ struct ContentView: View {
                                         loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
                                             // 延时后刷新所有硬盘状态（多次调用确保刷新）
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                                manager.loadConfig()
-                                            }
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                                                manager.loadConfig()
-                                            }
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                                manager.loadConfig()
-                                            }
+                                            self.refreshWithLoading()
                                         } else {
                                             alertMessage = result.message
                                             alertIsError = true
@@ -1004,9 +997,14 @@ struct ContentView: View {
                     }
                     manager.loadConfig()
                 }) {
-                    Label("🔄 刷新", systemImage: "arrow.clockwise")
+                    HStack {
+                        if isRefreshing {
+                            ProgressView().scaleEffect(0.7)
+                        }
+                        Label("🔄 刷新", systemImage: "arrow.clockwise")
+                    }
                 }
-                .disabled(isBatchOperating || loadingStates.values.contains(true))
+                .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
                 Spacer()
                 Button(action: {
                     isBatchOperating = true
@@ -1015,15 +1013,8 @@ struct ContentView: View {
                             _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
                         // 等待系统状态刷新后重新加载配置（多次调用确保刷新）
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        self.refreshWithLoading {
                             isBatchOperating = false
-                            manager.loadConfig()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                            manager.loadConfig()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-                            manager.loadConfig()
                         }
                     }
                 }) {
@@ -1042,15 +1033,8 @@ struct ContentView: View {
                             _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
                         // 等待系统状态刷新后重新加载配置（多次调用确保刷新）
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        self.refreshWithLoading {
                             isBatchOperating = false
-                            manager.loadConfig()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                            manager.loadConfig()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-                            manager.loadConfig()
                         }
                     }
                 }) {
@@ -1076,15 +1060,7 @@ struct ContentView: View {
                 let result = manager.addDisk(uuid: newUUID, mountPoint: newMountPoint)
                 if result.success {
                     // 延时后刷新（多次调用确保刷新）
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        manager.loadConfig()
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                        manager.loadConfig()
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        manager.loadConfig()
-                    }
+                    self.refreshWithLoading()
                     showingAddDialog = false
                     newUUID = ""
                     newMountPoint = ""
@@ -1126,15 +1102,7 @@ struct ContentView: View {
                     let success = manager.deleteDisk(uuid: disk.uuid)
                     if success {
                         // 延时后刷新（多次调用确保刷新）
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            manager.loadConfig()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            manager.loadConfig()
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                            manager.loadConfig()
-                        }
+                        self.refreshWithLoading()
                     }
                     deletingDisk = nil
                 }
@@ -1151,15 +1119,7 @@ struct ContentView: View {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
                                 // 延时后重新加载配置（多次调用确保刷新）
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                    manager.loadConfig()
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                                    manager.loadConfig()
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                    manager.loadConfig()
-                                }
+                                self.refreshWithLoading()
                             } else {
                                 alertMessage = result.message
                                 alertIsError = true
@@ -1195,15 +1155,7 @@ struct ContentView: View {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
                                 // 延时后重新加载配置（多次调用确保刷新）
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                    manager.loadConfig()
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                                    manager.loadConfig()
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                    manager.loadConfig()
-                                }
+                                self.refreshWithLoading()
                             } else {
                                 alertMessage = "挂载失败：" + mountResult.message
                                 alertIsError = true
@@ -1217,17 +1169,8 @@ struct ContentView: View {
         } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
-            manager.loadConfig()
             // 延时后重新加载配置（多次调用确保刷新）
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                manager.loadConfig()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                manager.loadConfig()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                manager.loadConfig()
-            }
+            self.refreshWithLoading()
         }
     }
     
@@ -1240,6 +1183,23 @@ struct ContentView: View {
             task.waitUntilExit()
             return task.terminationStatus == 0
         } catch { return false }
+    }
+    
+    /// 带 loading 状态的刷新（多次调用确保刷新）
+    func refreshWithLoading(completion: (() -> Void)? = nil) {
+        isRefreshing = true
+        manager.loadConfig()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            manager.loadConfig()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            manager.loadConfig()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            manager.loadConfig()
+            self.isRefreshing = false
+            completion?()
+        }
     }
     
     func configureSudoers() {
