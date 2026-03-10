@@ -925,7 +925,7 @@ struct ContentView: View {
             Divider()
             
             // Bottom buttons
-            HStack {
+            HStack(spacing: 12) {
                 Button(action: { showingAddDialog = true }) {
                     HStack {
                         Label("新增硬盘", systemImage: "plus")
@@ -935,6 +935,7 @@ struct ContentView: View {
                                     .opacity(isBatchOperating || loadingStates.values.contains(true) ? 1 : 0)
                             )
                     }
+                    .frame(width: 100)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -953,6 +954,7 @@ struct ContentView: View {
                                     .opacity(isRefreshing ? 1 : 0)
                             )
                     }
+                    .frame(width: 100)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
                 Spacer()
@@ -976,6 +978,7 @@ struct ContentView: View {
                                     .opacity(isBatchOperating ? 1 : 0)
                             )
                     }
+                    .frame(width: 100)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -998,6 +1001,7 @@ struct ContentView: View {
                                     .opacity(isBatchOperating ? 1 : 0)
                             )
                     }
+                    .frame(width: 100)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
             }
