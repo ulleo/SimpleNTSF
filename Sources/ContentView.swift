@@ -898,10 +898,11 @@ struct ContentView: View {
                             },
                             onEdit: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
-                                // 打开编辑前刷新实际挂载状态
-                                manager.refreshAllDiskInfo()
-                                editingDisk = disk
-                                showingEditDialog = true
+                                // 从 manager 获取最新数据后再打开编辑
+                                if let updatedDisk = manager.disks.first(where: { $0.uuid == disk.uuid }) {
+                                    editingDisk = updatedDisk
+                                    showingEditDialog = true
+                                }
                             },
                             onDelete: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
