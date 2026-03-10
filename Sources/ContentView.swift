@@ -922,9 +922,9 @@ struct ContentView: View {
                                     DispatchQueue.main.async {
                                         loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
-                                            // 延时后完整刷新所有硬盘状态
-                                            DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
-                                                manager.loadConfig()
+                                            // 延时后刷新所有硬盘状态
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                                manager.refreshAllDiskInfo()
                                             }
                                         } else {
                                             alertMessage = result.message
@@ -947,7 +947,7 @@ struct ContentView: View {
                             onEdit: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
                                 // 打开编辑前刷新实际挂载状态
-                                manager.updateDiskMountStatus(uuid: disk.uuid)
+                                manager.refreshAllDiskInfo()
                                 editingDisk = disk
                                 showingEditDialog = true
                             },
@@ -997,10 +997,10 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        // 等待系统状态刷新后再重载
+                        // 等待系统状态刷新后刷新所有硬盘状态
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             isBatchOperating = false
-                            manager.loadConfig()
+                            manager.refreshAllDiskInfo()
                         }
                     }
                 }) {
@@ -1018,10 +1018,10 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        // 等待系统状态刷新后再重载
+                        // 等待系统状态刷新后刷新所有硬盘状态
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             isBatchOperating = false
-                            manager.loadConfig()
+                            manager.refreshAllDiskInfo()
                         }
                     }
                 }) {
@@ -1101,9 +1101,9 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 延时后完整刷新所有硬盘状态
-                                DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
-                                    manager.loadConfig()
+                                // 延时后刷新所有硬盘状态
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                    manager.refreshAllDiskInfo()
                                 }
                             } else {
                                 alertMessage = result.message
@@ -1139,9 +1139,9 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 延时后完整刷新所有硬盘状态
-                                DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) {
-                                    manager.loadConfig()
+                                // 延时后刷新所有硬盘状态
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                    manager.refreshAllDiskInfo()
                                 }
                             } else {
                                 alertMessage = "挂载失败：" + mountResult.message
@@ -1157,6 +1157,10 @@ struct ContentView: View {
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
             manager.loadConfig()
+            // 延时后刷新磁盘状态
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                manager.refreshAllDiskInfo()
+            }
         }
     }
     
