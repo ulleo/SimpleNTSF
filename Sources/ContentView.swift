@@ -216,10 +216,10 @@ class DiskManager: ObservableObject {
                     let oldDisk = oldDisksSnapshot.first(where: { $0.uuid == uuid })
                     let newDisk = DiskInfo(
                         uuid: uuid,
-                        volumeName: oldDisk?.volumeName ?? "读取中…",
+                        volumeName: oldDisk?.volumeName ?? "",
                         mountPoint: mountPoint,
-                        device: oldDisk?.device ?? "读取中…",
-                        currentMount: oldDisk?.currentMount ?? "读取中…",
+                        device: oldDisk?.device ?? "",
+                        currentMount: oldDisk?.currentMount ?? "",
                         isMounted: oldDisk?.isMounted ?? false,
                         usage: oldDisk?.usage  // 保留旧的使用量值
                     )
@@ -228,16 +228,9 @@ class DiskManager: ObservableObject {
                 }
             }
             
-            // 在主线程更新列表
-            DispatchQueue.main.async {
-                print("准备更新 self.disks = \(newDisks.count) 个")
-                self.disks = newDisks
-                print("self.disks 已更新，当前 \(self.disks.count) 个")
-                
-                // 第二步：并行刷新所有设备信息（后台异步，不阻塞 UI）
-                print("调用 refreshAllDiskInfo()")
-                self.refreshAllDiskInfo()
-            }
+            // 并行刷新所有设备信息，完成后一次性更新 UI
+            print("调用 refreshAllDiskInfoWithCompletion()")
+            self.refreshAllDiskInfoWithCompletion(disks: newDisks)
         }
     }
     
@@ -297,6 +290,62 @@ class DiskManager: ObservableObject {
             
             self.disks = newDisks
             // @Published 赋值会自动触发通知，无需手动调用 objectWillChange.send()
+            print("所有硬盘设备信息已更新，disks 数组已替换")
+        }
+    }
+    
+    func refreshAllDiskInfoWithCompletion(disks: [DiskInfo]) {
+        // 并行获取所有硬盘的设备信息和使用量，完成后一次性更新 UI
+        let dispatchGroup = DispatchGroup()
+        let infoLock = NSLock()
+        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?)] = [:]
+        
+        print("🔄 开始刷新 \(disks.count) 个硬盘的设备信息（带完成回调）")
+        
+        for disk in disks {
+            dispatchGroup.enter()
+            DispatchQueue.global().async {
+                let device = self.findDevice(byUUID: disk.uuid)
+                let volumeName = self.getVolumeName(byUUID: disk.uuid)
+                let actualMount = self.getActualMountPoint(device: device)
+                let isMounted = actualMount != nil
+                
+                // 如果已挂载，获取使用量
+                var usage: String? = nil
+                if isMounted, let mount = actualMount {
+                    usage = self.getDiskUsage(mountPoint: mount)
+                }
+                
+                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), usage=\(usage ?? "-")")
+                
+                infoLock.lock()
+                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage)
+                infoLock.unlock()
+                dispatchGroup.leave()
+            }
+        }
+        
+        dispatchGroup.notify(queue: .main) {
+            print("设备信息查询完成，开始更新 UI")
+            
+            // 创建全新数组，一次性更新所有数据
+            let newDisks = disks.map { oldDisk -> DiskInfo in
+                if let info = updatedInfo[oldDisk.uuid] {
+                    print("✅ 更新硬盘 \(oldDisk.uuid.prefix(8)): \(info.device)/\(info.isMounted), usage=\(info.usage ?? "nil")")
+                    return DiskInfo(
+                        uuid: oldDisk.uuid,
+                        volumeName: info.volumeName,
+                        mountPoint: oldDisk.mountPoint,
+                        device: info.device,
+                        currentMount: info.currentMount,
+                        isMounted: info.isMounted,
+                        usage: info.usage
+                    )
+                }
+                return oldDisk
+            }
+            
+            self.disks = newDisks
             print("所有硬盘设备信息已更新，disks 数组已替换")
         }
     }
