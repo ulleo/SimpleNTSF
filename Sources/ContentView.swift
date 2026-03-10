@@ -258,13 +258,10 @@ class DiskManager: ObservableObject {
                 // 强制触发 SwiftUI 更新
                 self.objectWillChange.send()
                 logger.info("所有硬盘设备信息已更新")
-                // 状态更新完成后再获取使用量
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    self.refreshDiskUsages()
-                }
-            } else {
-                self.refreshDiskUsages()
             }
+            
+            // 使用更新后的 disks 状态获取使用量（并行）
+            self.refreshDiskUsages()
         }
     }
     
@@ -423,25 +420,29 @@ class DiskManager: ObservableObject {
         // 并行异步获取所有已挂载磁盘的使用量
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
+            
+            // 在主线程获取 disks 快照，确保使用最新的 isMounted 状态
+            var disksToQuery: [(id: UUID, mountPoint: String)] = []
+            DispatchQueue.main.sync {
+                for disk in self.disks {
+                    if disk.isMounted {
+                        disksToQuery.append((disk.id, disk.mountPoint))
+                    }
+                }
+            }
+            
             var updatedUsages: [UUID: String?] = [:]
             let dispatchGroup = DispatchGroup()
             let usageLock = NSLock()
             
-            // 复制快照，避免遍历时数组变化
-            let disksSnapshot = self.disks
-            
-            for disk in disksSnapshot {
-                if disk.isMounted {
-                    dispatchGroup.enter()
-                    DispatchQueue.global().async {
-                        let usage = self.getDiskUsage(mountPoint: disk.mountPoint)
-                        usageLock.lock()
-                        updatedUsages[disk.id] = usage
-                        usageLock.unlock()
-                        dispatchGroup.leave()
-                    }
-                } else {
-                    updatedUsages[disk.id] = nil
+            for (id, mountPoint) in disksToQuery {
+                dispatchGroup.enter()
+                DispatchQueue.global().async {
+                    let usage = self.getDiskUsage(mountPoint: mountPoint)
+                    usageLock.lock()
+                    updatedUsages[id] = usage
+                    usageLock.unlock()
+                    dispatchGroup.leave()
                 }
             }
             
