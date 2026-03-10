@@ -1223,17 +1223,23 @@ struct ContentView: View {
         let errorPipe = Pipe()
         task.standardError = errorPipe
         
-        defer {
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-        }
-        
         DispatchQueue.global().async {
+            var errorMsg = ""
             do {
                 print("🚀 运行 osascript...")
                 try task.run()
                 task.waitUntilExit()
                 print("📊 osascript 退出码：\(task.terminationStatus)")
+                
+                // 在 defer 之前读取错误输出
+                let errorData = errorPipe.fileHandleForReading.availableData
+                if !errorData.isEmpty {
+                    errorMsg = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                }
+                
+                // 关闭文件句柄
+                pipe.fileHandleForReading.closeFile()
+                errorPipe.fileHandleForReading.closeFile()
                 
                 DispatchQueue.main.async {
                     isConfiguring = false
@@ -1249,21 +1255,17 @@ struct ContentView: View {
                         self.checkPasswordFreeStatus()
                     } else {
                         setupSuccess = false
-                        // 安全读取错误输出，避免崩溃
-                        var errorMsg = "配置失败（退出码：\(task.terminationStatus)）"
-                        let errorData = errorPipe.fileHandleForReading.availableData
-                        if !errorData.isEmpty {
-                            let msg = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if let msg = msg, !msg.isEmpty {
-                                errorMsg = msg
-                            }
-                        }
-                        print("❌ 配置失败：terminationStatus=\(task.terminationStatus), fileExists=\(fileExists), error=\(errorMsg)")
-                        setupResult = "❌ 配置失败：" + errorMsg
+                        let displayError = errorMsg.isEmpty ? "配置失败（退出码：\(task.terminationStatus)）" : errorMsg
+                        print("❌ 配置失败：terminationStatus=\(task.terminationStatus), fileExists=\(fileExists), error=\(displayError)")
+                        setupResult = "❌ 配置失败：" + displayError
                         logger.error("Sudoers 配置失败")
                     }
                 }
             } catch {
+                // 关闭文件句柄
+                try? pipe.fileHandleForReading.close()
+                try? errorPipe.fileHandleForReading.close()
+                
                 print("⚠️ 配置异常：\(error.localizedDescription)")
                 DispatchQueue.main.async {
                     isConfiguring = false
