@@ -1174,24 +1174,12 @@ struct ContentView: View {
     
     func checkPasswordFreeStatus() {
         print("🔐 检查 sudo 免密状态...")
-        DispatchQueue.global().async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-            task.arguments = ["-n", "true"]
-            do {
-                try task.run()
-                task.waitUntilExit()
-                let result = (task.terminationStatus == 0)
-                print("sudo 免密状态：\(result ? "✅ 已配置" : "❌ 未配置")")
-                DispatchQueue.main.async {
-                    self.isPasswordFree = result
-                }
-            } catch {
-                print("sudo 检查失败：\(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    self.isPasswordFree = false
-                }
-            }
+        let fm = FileManager.default
+        let sudoersExists = fm.fileExists(atPath: Constants.sudoersFilePath)
+        print("sudoers 文件 (\(Constants.sudoersFilePath)): \(sudoersExists ? "✅ 存在" : "❌ 不存在")")
+        
+        DispatchQueue.main.async {
+            self.isPasswordFree = sudoersExists
         }
     }
     
