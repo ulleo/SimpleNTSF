@@ -994,6 +994,49 @@ struct DiskRow: View {
             Spacer()
             
             HStack(spacing: 6) {
+                // 挂载按钮（未挂载时可用）
+                Button(action: onMount) {
+                    HStack {
+                        if isLoading && !disk.isMounted {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "externaldrive.fill")
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.green)
+                .disabled(isDisabled || disk.isMounted)
+                
+                // 卸载按钮（已挂载时可用）
+                Button(action: onUnmount) {
+                    HStack {
+                        if isLoading && disk.isMounted && !needsRemount {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "eject.fill")
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .disabled(isDisabled || !disk.isMounted)
+                
+                // 重新挂载按钮（挂载点不一致时可用）
+                Button(action: onRemount) {
+                    HStack {
+                        if isRemounting {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.purple)
+                .disabled(isDisabled || !needsRemount)
+                
+                // 编辑按钮
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
                 }
@@ -1001,65 +1044,13 @@ struct DiskRow: View {
                 .tint(.blue)
                 .disabled(isDisabled)
                 
-                HStack(spacing: 6) {
-                    // 挂载按钮（未挂载时可用）
-                    Button(action: onMount) {
-                        HStack {
-                            if isLoading && !disk.isMounted {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "externaldrive.fill")
-                            }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.green)
-                    .disabled(isDisabled || disk.isMounted)
-                    
-                    // 卸载按钮（已挂载时可用）
-                    Button(action: onUnmount) {
-                        HStack {
-                            if isLoading && disk.isMounted && !needsRemount {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "eject.fill")
-                            }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                    .disabled(isDisabled || !disk.isMounted)
-                    
-                    // 重新挂载按钮（挂载点不一致时可用）
-                    Button(action: onRemount) {
-                        HStack {
-                            if isRemounting {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                            }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.purple)
-                    .disabled(isDisabled || !needsRemount)
-                    
-                    // 编辑按钮
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
-                    .disabled(isDisabled)
-                    
-                    // 删除按钮
-                    Button(action: onDelete) {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .disabled(isDisabled)
+                // 删除按钮
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
                 }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .disabled(isDisabled)
             }
             .frame(width: 240, alignment: .center)
         }
