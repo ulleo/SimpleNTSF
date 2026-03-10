@@ -214,12 +214,13 @@ class DiskManager: ObservableObject {
                     
                     // 从旧数据中查找并保留所有状态
                     let oldDisk = oldDisksSnapshot.first(where: { $0.uuid == uuid })
+                    // 使用占位符，避免 UI 显示空值
                     let newDisk = DiskInfo(
                         uuid: uuid,
-                        volumeName: oldDisk?.volumeName ?? "",
+                        volumeName: oldDisk?.volumeName ?? "查询中…",
                         mountPoint: mountPoint,
-                        device: oldDisk?.device ?? "",
-                        currentMount: oldDisk?.currentMount ?? "",
+                        device: oldDisk?.device ?? "查询中…",
+                        currentMount: oldDisk?.currentMount ?? "查询中…",
                         isMounted: oldDisk?.isMounted ?? false,
                         usage: oldDisk?.usage  // 保留旧的使用量值
                     )
@@ -228,9 +229,16 @@ class DiskManager: ObservableObject {
                 }
             }
             
-            // 并行刷新所有设备信息，完成后一次性更新 UI
-            print("调用 refreshAllDiskInfoWithCompletion()")
-            self.refreshAllDiskInfoWithCompletion(disks: newDisks)
+            // 先更新 UI 显示配置中的硬盘（设备信息为空），然后并行刷新设备信息
+            DispatchQueue.main.async {
+                print("准备更新 self.disks = \(newDisks.count) 个（首次更新）")
+                self.disks = newDisks
+                print("self.disks 已更新，当前 \(self.disks.count) 个")
+                
+                // 并行刷新所有设备信息，完成后再次更新 UI
+                print("调用 refreshAllDiskInfoWithCompletion()")
+                self.refreshAllDiskInfoWithCompletion(disks: newDisks)
+            }
         }
     }
     
@@ -1235,19 +1243,30 @@ struct DiskRow: View {
                 HStack(spacing: 6) {
                     Text(disk.device).font(.system(.body, design: .monospaced))
                     Text(disk.volumeName).font(.system(.body, design: .monospaced)).foregroundColor(.blue)
-                    Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
-                        .font(.caption).foregroundColor(disk.isMounted ? .green : .orange)
+                    if disk.device == "查询中…" {
+                        Text("⏳ 查询中…")
+                            .font(.caption).foregroundColor(.secondary)
+                    } else {
+                        Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
+                            .font(.caption).foregroundColor(disk.isMounted ? .green : .orange)
+                    }
                 }
                 Text("UUID: " + disk.uuid).font(.caption).foregroundColor(.secondary)
             }
             .frame(minWidth: 400, maxWidth: 400, alignment: .leading)
             
             VStack(alignment: .leading, spacing: 4) {
-                Text("当前：" + disk.currentMount).font(.system(.body, design: .monospaced))
+                if disk.currentMount == "查询中…" {
+                    Text("当前：-").font(.system(.body, design: .monospaced)).foregroundColor(.gray)
+                } else {
+                    Text("当前：" + disk.currentMount).font(.system(.body, design: .monospaced))
+                }
                 Text("目标：" + disk.mountPoint).font(.caption).foregroundColor(.secondary)
                 if let usage = disk.usage {
                     Text("用量：" + usage).font(.caption).foregroundColor(.blue)
-                } else if disk.isMounted && disk.device != "读取中…" {
+                } else if disk.device == "查询中…" {
+                    Text("用量：-").font(.caption).foregroundColor(.gray)
+                } else if disk.isMounted {
                     Text("用量：获取中…").font(.caption).foregroundColor(.secondary)
                 } else {
                     Text("用量：-").font(.caption).foregroundColor(.gray)
@@ -1594,9 +1613,15 @@ struct EditMountPointSheet: View {
                     Divider()
                     VStack(alignment: .leading, spacing: 6) {
                         Text("当前状态：").font(.caption).foregroundColor(.secondary)
-                        Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundColor(disk.isMounted ? .green : .orange)
+                        if disk.device == "查询中…" {
+                            Text("⏳ 查询中…")
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(disk.isMounted ? .green : .orange)
+                        }
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("目标挂载点：").font(.caption)
