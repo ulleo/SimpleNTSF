@@ -394,21 +394,43 @@ class DiskManager: ObservableObject {
         }
     }
     
-    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5) {
-        // 延时后更新指定硬盘的挂载状态（从实际设备读取），避免系统状态未及时刷新
-        DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
-            guard let self = self else { return }
-            for i in 0..<self.disks.count {
-                if self.disks[i].uuid == uuid {
-                    let device = self.findDevice(byUUID: uuid)
-                    let volumeName = self.getVolumeName(byUUID: uuid)
-                    self.disks[i].device = device
-                    self.disks[i].volumeName = volumeName
-                    let actualMount = self.getActualMountPoint(device: device)
-                    self.disks[i].isMounted = actualMount != nil
-                    self.disks[i].currentMount = actualMount ?? "-"
+    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5, completion: (() -> Void)? = nil) {
+        // 延时后在后台更新指定硬盘的挂载状态，避免系统状态未及时刷新
+        DispatchQueue.global().asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
+            guard let self = self else {
+                completion?()
+                return
+            }
+            
+            // 在后台执行 shell 命令
+            var updatedDevice = ""
+            var updatedVolumeName = ""
+            var updatedIsMounted = false
+            var updatedCurrentMount = "-"
+            
+            for disk in self.disks {
+                if disk.uuid == uuid {
+                    updatedDevice = self.findDevice(byUUID: uuid)
+                    updatedVolumeName = self.getVolumeName(byUUID: uuid)
+                    let actualMount = self.getActualMountPoint(device: updatedDevice)
+                    updatedIsMounted = actualMount != nil
+                    updatedCurrentMount = actualMount ?? "-"
                     break
                 }
+            }
+            
+            // 只在主线程更新 UI
+            DispatchQueue.main.async {
+                for i in 0..<self.disks.count {
+                    if self.disks[i].uuid == uuid {
+                        self.disks[i].device = updatedDevice
+                        self.disks[i].volumeName = updatedVolumeName
+                        self.disks[i].isMounted = updatedIsMounted
+                        self.disks[i].currentMount = updatedCurrentMount
+                        break
+                    }
+                }
+                completion?()
             }
         }
     }
@@ -710,13 +732,14 @@ struct ContentView: View {
                                 DispatchQueue.global().async {
                                     let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                                     DispatchQueue.main.async {
-                                        loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
-                                            // 从实际设备读取挂载状态（延时 0.5 秒让系统状态更新）
-                                            manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
-                                            manager.refreshDiskUsages()
+                                            // 先刷新状态，完成后再获取使用量，最后移除 loading
+                                            manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5) {
+                                                manager.refreshDiskUsages()
+                                                loadingStates.removeValue(forKey: disk.uuid)
+                                            }
                                         } else {
-                                            // 失败才弹窗
+                                            loadingStates.removeValue(forKey: disk.uuid)
                                             alertMessage = result.message
                                             alertIsError = true
                                             showingAlert = true
@@ -880,12 +903,13 @@ struct ContentView: View {
                     DispatchQueue.global().async {
                         let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
                         DispatchQueue.main.async {
-                            loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 从实际设备读取挂载状态（延时 0.5 秒让系统状态更新）
-                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
+                                // 刷新状态完成后移除 loading
+                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5) {
+                                    loadingStates.removeValue(forKey: disk.uuid)
+                                }
                             } else {
-                                // 失败才弹窗
+                                loadingStates.removeValue(forKey: disk.uuid)
                                 alertMessage = result.message
                                 alertIsError = true
                                 showingAlert = true
@@ -917,12 +941,14 @@ struct ContentView: View {
                         // 再挂载到目标位置
                         let mountResult = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         DispatchQueue.main.async {
-                            loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 从实际设备读取挂载状态（延时 0.5 秒让系统状态更新）
-                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
-                                manager.refreshDiskUsages()
+                                // 刷新状态完成后获取使用量，最后移除 loading
+                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5) {
+                                    manager.refreshDiskUsages()
+                                    loadingStates.removeValue(forKey: disk.uuid)
+                                }
                             } else {
+                                loadingStates.removeValue(forKey: disk.uuid)
                                 alertMessage = "挂载失败：" + mountResult.message
                                 alertIsError = true
                                 showingAlert = true
