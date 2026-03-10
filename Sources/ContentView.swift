@@ -291,12 +291,10 @@ class DiskManager: ObservableObject {
                 return oldDisk
             }
             
-            self.disks = []
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                self.disks = newDisks
-                // @Published 赋值会自动触发通知，无需手动调用 objectWillChange.send()
-                print("所有硬盘设备信息已更新，disks 数组已替换")
-            }
+            self.objectWillChange.send()
+            self.disks = newDisks
+            // @Published 赋值会自动触发通知，无需手动调用 objectWillChange.send()
+            print("所有硬盘设备信息已更新，disks 数组已替换")
         }
     }
     
@@ -351,12 +349,10 @@ class DiskManager: ObservableObject {
                 return oldDisk
             }
             
-            self.disks = []
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                self.disks = newDisks
-                // @Published 赋值后会自动触发通知
-                print("所有硬盘设备信息已更新，disks 数组已替换")
-            }
+            self.objectWillChange.send()
+            self.disks = newDisks
+            // @Published 赋值后会自动触发通知
+            print("所有硬盘设备信息已更新，disks 数组已替换")
         }
     }
     
