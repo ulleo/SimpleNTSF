@@ -2,7 +2,7 @@
 
 ## 📋 项目概述
 
-SimpleNTFS 是一个 macOS 原生的 NTFS 硬盘管理工具，提供图形化界面来挂载、卸载和管理 NTFS 格式的硬盘。
+SimpleNTFS 是一个 macOS 平台的 NTFS 硬盘管理工具，基于 SwiftUI 构建，提供图形化界面来挂载、卸载和管理 NTFS 格式的硬盘。
 
 ### 💡 为什么需要这个工具？
 
