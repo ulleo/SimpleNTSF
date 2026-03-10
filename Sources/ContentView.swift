@@ -857,9 +857,9 @@ struct ContentView: View {
                 
                 // 提示信息居中
                 HStack(spacing: 6) {
-                    // macFUSE 链接
+                    // 查看依赖说明（跳转 GitHub README）
                     Button(action: {
-                        if let url = URL(string: "https://macfuse.github.io/") {
+                        if let url = URL(string: "https://github.com/ulleo/SimpleNTSF") {
                             NSWorkspace.shared.open(url)
                         }
                     }) {
