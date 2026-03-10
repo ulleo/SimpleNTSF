@@ -258,8 +258,13 @@ class DiskManager: ObservableObject {
                 // 强制触发 SwiftUI 更新
                 self.objectWillChange.send()
                 logger.info("所有硬盘设备信息已更新")
+                // 状态更新完成后再获取使用量
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.refreshDiskUsages()
+                }
+            } else {
+                self.refreshDiskUsages()
             }
-            self.refreshDiskUsages()
         }
     }
     
@@ -422,7 +427,10 @@ class DiskManager: ObservableObject {
             let dispatchGroup = DispatchGroup()
             let usageLock = NSLock()
             
-            for disk in self.disks {
+            // 复制快照，避免遍历时数组变化
+            let disksSnapshot = self.disks
+            
+            for disk in disksSnapshot {
                 if disk.isMounted {
                     dispatchGroup.enter()
                     DispatchQueue.global().async {
@@ -438,10 +446,17 @@ class DiskManager: ObservableObject {
             }
             
             dispatchGroup.notify(queue: .main) {
+                var hasChanges = false
                 for i in 0..<self.disks.count {
                     if let usage = updatedUsages[self.disks[i].id] {
-                        self.disks[i].usage = usage
+                        if self.disks[i].usage != usage {
+                            self.disks[i].usage = usage
+                            hasChanges = true
+                        }
                     }
+                }
+                if hasChanges {
+                    self.objectWillChange.send()
                 }
             }
         }
