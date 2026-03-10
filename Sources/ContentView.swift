@@ -798,8 +798,7 @@ struct ContentView: View {
     @State private var newMountPoint = ""
     @State private var alertMessage: String?
     @State private var alertIsError = false
-    @State private var showingEditDialog = false
-    @State private var editingDisk: DiskInfo?
+    @State private var editingDisk: DiskInfo?  // 用 .sheet(item:) 代替 isPresented
     @State private var showingDeleteConfirm = false
     @State private var deletingDisk: DiskInfo?
     @State private var showingUnmountConfirm = false
@@ -898,10 +897,9 @@ struct ContentView: View {
                             },
                             onEdit: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
-                                // 从 manager 获取最新数据后再打开编辑
+                                // 从 manager 获取最新数据后再打开编辑（.sheet(item:) 会自动弹出）
                                 if let updatedDisk = manager.disks.first(where: { $0.uuid == disk.uuid }) {
                                     editingDisk = updatedDisk
-                                    showingEditDialog = true
                                 }
                             },
                             onDelete: {
@@ -1018,14 +1016,13 @@ struct ContentView: View {
                 newMountPoint = ""
             }, addedUUIDs: manager.addedUUIDs)
         }
-        .sheet(isPresented: $showingEditDialog) {
-            EditMountPointSheet(diskInfo: editingDisk, onSave: { newMountPoint in
-                if let disk = editingDisk, !newMountPoint.isEmpty {
+        .sheet(item: $editingDisk) { disk in
+            EditMountPointSheet(diskInfo: disk, onSave: { newMountPoint in
+                if !newMountPoint.isEmpty {
                     let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
                     if result.success {
                         // 就地更新挂载点，不重载整个列表
                         manager.updateDiskMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
-                        showingEditDialog = false
                         editingDisk = nil
                     } else {
                         alertMessage = result.message
@@ -1034,7 +1031,6 @@ struct ContentView: View {
                     }
                 }
             }, onCancel: {
-                showingEditDialog = false
                 editingDisk = nil
             })
         }
