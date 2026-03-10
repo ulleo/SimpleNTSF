@@ -1019,7 +1019,7 @@ struct ContentView: View {
             }, addedUUIDs: manager.addedUUIDs)
         }
         .sheet(isPresented: $showingEditDialog) {
-            EditMountPointSheet(disk: editingDisk, onSave: { newMountPoint in
+            EditMountPointSheet(diskInfo: editingDisk, onSave: { newMountPoint in
                 if let disk = editingDisk, !newMountPoint.isEmpty {
                     let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
                     if result.success {
@@ -1583,7 +1583,7 @@ struct DiskListItem: View {
 // MARK: - Edit Mount Point Sheet
 
 struct EditMountPointSheet: View {
-    let disk: DiskInfo?
+    let diskInfo: DiskInfo?
     let onSave: (String) -> Void
     let onCancel: () -> Void
     
@@ -1594,7 +1594,7 @@ struct EditMountPointSheet: View {
     var body: some View {
         VStack(spacing: 20) {
             Text("✏️ 修改挂载点").font(.title2.bold())
-            if let disk = disk {
+            if let disk = diskInfo {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Text("硬盘：").font(.caption).foregroundColor(.secondary)
@@ -1647,7 +1647,7 @@ struct EditMountPointSheet: View {
         .padding(30)
         .frame(minWidth: 500, minHeight: 300)
         .onAppear {
-            if let disk = disk {
+            if let disk = diskInfo {
                 mountPoint = disk.mountPoint
             }
         }
