@@ -637,7 +637,7 @@ class DiskManager: ObservableObject {
         
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        // ntfs-3g 完整挂载命令：设备 挂载点 -o local -o auto_xattr -o volname="..."
+        // ntfs-3g 完整挂载命令：设备 挂载点 -o local -o auto_xattr -o auto_cache -o volname="..."
         // 从挂载点路径提取卷名（最后一段）
         let volumeName = (resolvedMountPoint as NSString).lastPathComponent
         let args: [String] = [
@@ -647,6 +647,7 @@ class DiskManager: ObservableObject {
             resolvedMountPoint,
             "-o", "local",
             "-o", "auto_xattr",
+            "-o", "auto_cache",
             "-o", "volname=\(volumeName)"
         ]
         task.arguments = args
