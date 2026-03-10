@@ -1198,6 +1198,7 @@ struct ContentView: View {
     }
     
     func configureSudoers() {
+        print("🔧 开始配置 sudoers...")
         isConfiguring = true
         setupResult = "正在配置..."
         
@@ -1210,6 +1211,8 @@ struct ContentView: View {
         let tempFile = "/tmp/simplentfs_sudoers_\(ProcessInfo.processInfo.processIdentifier)"
         
         let script = "echo '\(sudoersEntry)' > '\(tempFile)' && chown root:wheel '\(tempFile)' && chmod 440 '\(tempFile)' && mv '\(tempFile)' '\(sudoersFile)'"
+        
+        print("📝 执行脚本：\(script)")
         
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -1227,23 +1230,34 @@ struct ContentView: View {
         
         DispatchQueue.global().async {
             do {
+                print("🚀 运行 osascript...")
                 try task.run()
                 task.waitUntilExit()
+                print("📊 osascript 退出码：\(task.terminationStatus)")
                 
                 DispatchQueue.main.async {
                     isConfiguring = false
-                    if task.terminationStatus == 0 && FileManager.default.fileExists(atPath: sudoersFile) {
+                    let fileExists = FileManager.default.fileExists(atPath: sudoersFile)
+                    print("📁 sudoers 文件检查结果：\(fileExists ? "存在" : "不存在")")
+                    
+                    if task.terminationStatus == 0 && fileExists {
                         setupSuccess = true
                         setupResult = "✅ 配置成功！现在挂载/卸载无需密码。"
                         logger.info("Sudoers 配置成功")
+                        // 配置成功后重新检测状态
+                        print("🔄 重新检测 sudo 状态...")
+                        self.checkPasswordFreeStatus()
                     } else {
                         setupSuccess = false
                         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                        setupResult = "❌ 配置失败：" + (String(data: errorData, encoding: .utf8) ?? "未知错误")
+                        let errorMsg = String(data: errorData, encoding: .utf8) ?? "未知错误"
+                        print("❌ 配置失败：terminationStatus=\(task.terminationStatus), fileExists=\(fileExists), error=\(errorMsg)")
+                        setupResult = "❌ 配置失败：" + errorMsg
                         logger.error("Sudoers 配置失败")
                     }
                 }
             } catch {
+                print("⚠️ 配置异常：\(error.localizedDescription)")
                 DispatchQueue.main.async {
                     isConfiguring = false
                     setupSuccess = false
