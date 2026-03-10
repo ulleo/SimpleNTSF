@@ -155,59 +155,68 @@ class DiskManager: ObservableObject {
     // MARK: - Config Operations
     
     func loadConfig() {
-        fileLock.lock()
-        defer { fileLock.unlock() }
-        
-        disks.removeAll()
-        guard FileManager.default.fileExists(atPath: configPath) else { return }
-        
-        guard let content = try? String(contentsOfFile: configPath, encoding: .utf8),
-              let lines = content.components(separatedBy: "\n").filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }).takeIf({ !$0.isEmpty }) else {
-            return
-        }
-        
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+        // 在后台异步加载配置，避免阻塞 UI
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
             
-            let parts = trimmed.split(separator: ":", maxSplits: 1)
-            if parts.count == 2 {
-                let uuid = String(parts[0]).trimmingCharacters(in: .whitespaces)
-                let mountPoint = String(parts[1]).trimmingCharacters(in: .whitespaces)
+            self.fileLock.lock()
+            defer { self.fileLock.unlock() }
+            
+            var newDisks: [DiskInfo] = []
+            
+            guard FileManager.default.fileExists(atPath: self.configPath) else { return }
+            
+            guard let content = try? String(contentsOfFile: self.configPath, encoding: .utf8),
+                  let lines = content.components(separatedBy: "\n").filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }).takeIf({ !$0.isEmpty }) else {
+                return
+            }
+            
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
                 
-                // 验证 UUID 格式
-                guard isValidUUID(uuid) else {
-                    logger.warning("跳过无效的 UUID 格式：\(uuid)")
-                    continue
+                let parts = trimmed.split(separator: ":", maxSplits: 1)
+                if parts.count == 2 {
+                    let uuid = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                    let mountPoint = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                    
+                    // 验证 UUID 格式
+                    guard self.isValidUUID(uuid) else {
+                        logger.warning("跳过无效的 UUID 格式：\(uuid)")
+                        continue
+                    }
+                    
+                    // 验证挂载点
+                    let validation = self.validateMountPoint(mountPoint)
+                    if !validation.valid {
+                        logger.warning("跳过无效的挂载点：\(mountPoint) - \(validation.message)")
+                        continue
+                    }
+                    
+                    // 在后台获取设备信息
+                    let device = self.findDevice(byUUID: uuid)
+                    let volumeName = self.getVolumeName(byUUID: uuid)
+                    let actualMount = self.getActualMountPoint(device: device)
+                    let isMounted = actualMount != nil
+                    
+                    newDisks.append(DiskInfo(
+                        uuid: uuid,
+                        volumeName: volumeName,
+                        mountPoint: mountPoint,
+                        device: device,
+                        currentMount: actualMount ?? "-",
+                        isMounted: isMounted
+                    ))
                 }
-                
-                // 验证挂载点
-                let validation = validateMountPoint(mountPoint)
-                if !validation.valid {
-                    logger.warning("跳过无效的挂载点：\(mountPoint) - \(validation.message)")
-                    continue
-                }
-                
-                let device = findDevice(byUUID: uuid)
-                let volumeName = getVolumeName(byUUID: uuid)
-                let actualMount = getActualMountPoint(device: device)
-                let isMounted = actualMount != nil
-                
-                disks.append(DiskInfo(
-                    uuid: uuid,
-                    volumeName: volumeName,
-                    mountPoint: mountPoint,
-                    device: device,
-                    currentMount: actualMount ?? "-",
-                    isMounted: isMounted
-                ))
+            }
+            
+            // 在主线程更新 UI
+            DispatchQueue.main.async {
+                self.disks = newDisks
+                logger.info("加载配置完成，共 \(self.disks.count) 个硬盘")
+                self.refreshDiskUsages()
             }
         }
-        
-        logger.info("加载配置完成，共 \(self.disks.count) 个硬盘")
-        
-        // 异步获取使用量
-        self.refreshDiskUsages()
     }
     
     func findDevice(byUUID uuid: String) -> String {
