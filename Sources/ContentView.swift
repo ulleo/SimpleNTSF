@@ -30,14 +30,16 @@ struct DiskInfo: Identifiable, Codable {
     var device: String
     var currentMount: String
     var isMounted: Bool
+    var usage: String?  // 如 "80Gi / 931Gi (9%)"
     
-    init(id: UUID = UUID(), uuid: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool) {
+    init(id: UUID = UUID(), uuid: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil) {
         self.id = id
         self.uuid = uuid
         self.mountPoint = mountPoint
         self.device = device
         self.currentMount = currentMount
         self.isMounted = isMounted
+        self.usage = usage
     }
 }
 
@@ -116,7 +118,7 @@ class DiskManager: ObservableObject {
     
     func isValidUUID(_ uuid: String) -> Bool {
         let pattern = "^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$"
-        return uuid.range(of: pattern, options: .regularExpression, caseInsensitive: true) != nil
+        return uuid.range(of: pattern, options: .regularExpression) != nil
     }
     
     func validateMountPoint(_ path: String) -> (valid: Bool, message: String) {
@@ -185,19 +187,23 @@ class DiskManager: ObservableObject {
                 }
                 
                 let device = findDevice(byUUID: uuid)
-                let isMounted = checkMounted(at: mountPoint)
+                let actualMount = getActualMountPoint(device: device)
+                let isMounted = actualMount != nil
                 
                 disks.append(DiskInfo(
                     uuid: uuid,
                     mountPoint: mountPoint,
                     device: device,
-                    currentMount: isMounted ? mountPoint : "-",
+                    currentMount: actualMount ?? "-",
                     isMounted: isMounted
                 ))
             }
         }
         
-        logger.info("加载配置完成，共 \(disks.count) 个硬盘")
+        logger.info("加载配置完成，共 \(self.disks.count) 个硬盘")
+        
+        // 异步获取使用量
+        self.refreshDiskUsages()
     }
     
     func findDevice(byUUID uuid: String) -> String {
@@ -253,9 +259,128 @@ class DiskManager: ObservableObject {
         return false
     }
     
+    func getActualMountPoint(device: String) -> String? {
+        // 检查设备实际挂载在哪里
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/sbin/mount")
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
+        
+        do {
+            try task.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            
+            for line in output.components(separatedBy: "\n") {
+                if line.contains("/dev/\(device) ") {
+                    // 格式：/dev/diskXsY on /path/to/mount (ntfs, ...)
+                    let parts = line.components(separatedBy: " on ")
+                    if parts.count >= 2 {
+                        let mountPath = parts[1].split(separator: " ").first.map(String.init)
+                        return mountPath
+                    }
+                }
+            }
+        } catch {
+            logger.error("获取实际挂载点失败：\(error.localizedDescription)")
+        }
+        return nil
+    }
+    
+    func getDiskUsage(mountPoint: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/df")
+        task.arguments = ["-h", mountPoint]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        
+        defer {
+            pipe.fileHandleForReading.closeFile()
+        }
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            
+            // df -h 输出格式：Filesystem Size Used Avail Capacity iused ifree %iused Mounted on
+            let lines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
+            if lines.count >= 2 {
+                let parts = lines[1].components(separatedBy: " ").filter { !$0.isEmpty }
+                if parts.count >= 5 {
+                    let used = parts[2]
+                    let total = parts[1]
+                    let capacity = parts[4]  // 如 "4%"
+                    return "\(used) / \(total) (\(capacity))"
+                }
+            }
+        } catch {
+            logger.error("获取磁盘使用量失败：\(error.localizedDescription)")
+        }
+        return nil
+    }
+    
+    func refreshDiskUsages() {
+        // 异步获取所有已挂载磁盘的使用量
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            var updatedUsages: [UUID: String?] = [:]
+            
+            for disk in self.disks {
+                if disk.isMounted {
+                    let usage = self.getDiskUsage(mountPoint: disk.mountPoint)
+                    updatedUsages[disk.id] = usage
+                } else {
+                    updatedUsages[disk.id] = nil
+                }
+            }
+            
+            DispatchQueue.main.async {
+                for i in 0..<self.disks.count {
+                    if let usage = updatedUsages[self.disks[i].id] {
+                        self.disks[i].usage = usage
+                    }
+                }
+            }
+        }
+    }
+    
+    func updateDiskMountStatus(uuid: String) {
+        // 就地更新指定硬盘的挂载状态（从实际设备读取），避免重载整个列表
+        for i in 0..<disks.count {
+            if disks[i].uuid == uuid {
+                let device = findDevice(byUUID: uuid)
+                disks[i].device = device
+                let actualMount = getActualMountPoint(device: device)
+                disks[i].isMounted = actualMount != nil
+                disks[i].currentMount = actualMount ?? "-"
+                break
+            }
+        }
+    }
+    
+    func updateDiskMountPoint(uuid: String, newMountPoint: String) {
+        // 就地更新指定硬盘的目标挂载点，不改变挂载状态
+        for i in 0..<disks.count {
+            if disks[i].uuid == uuid {
+                disks[i].mountPoint = newMountPoint
+                break
+            }
+        }
+    }
+    
     func mountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+        // 展开 ~ 为绝对路径（兼容旧配置文件）
+        let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
+        let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
+        
         // 验证挂载点
-        let validation = validateMountPoint(mountPoint)
+        let validation = validateMountPoint(resolvedMountPoint)
         if !validation.valid {
             return (false, validation.message)
         }
@@ -265,9 +390,9 @@ class DiskManager: ObservableObject {
         
         let fm = FileManager.default
         do {
-            if !fm.fileExists(atPath: mountPoint) {
-                try fm.createDirectory(atPath: mountPoint, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
-                logger.info("创建挂载点目录：\(mountPoint)")
+            if !fm.fileExists(atPath: resolvedMountPoint) {
+                try fm.createDirectory(atPath: resolvedMountPoint, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+                logger.info("创建挂载点目录：\(resolvedMountPoint)")
             }
         } catch {
             return (false, "无法创建挂载点目录：\(error.localizedDescription)")
@@ -275,7 +400,7 @@ class DiskManager: ObservableObject {
         
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        task.arguments = ["-n", Constants.mountNTFSPath, "/dev/" + device, mountPoint]
+        task.arguments = ["-n", Constants.mountNTFSPath, "/dev/" + device, resolvedMountPoint]
         
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -351,7 +476,9 @@ class DiskManager: ObservableObject {
             return (false, "无效的 UUID 格式，请使用类似 E0719CA3-71B2-12E0-A9E0-12B4EA12B4C2 的格式")
         }
         
-        // 验证挂载点
+        // 验证挂载点并获取展开后的绝对路径
+        let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
+        let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
         let validation = validateMountPoint(mountPoint)
         if !validation.valid {
             return (false, validation.message)
@@ -362,13 +489,13 @@ class DiskManager: ObservableObject {
         
         var content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
         if !content.isEmpty && !content.hasSuffix("\n") { content += "\n" }
-        content += "\(uuid):\(mountPoint)\n"
+        content += "\(uuid):\(resolvedMountPoint)\n"
         
         do {
             try content.write(toFile: configPath, atomically: true, encoding: .utf8)
             // 确保权限保持 600
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
-            logger.info("添加硬盘配置：\(uuid) -> \(mountPoint)")
+            logger.info("添加硬盘配置：\(uuid) -> \(resolvedMountPoint)")
             return (true, "")
         } catch {
             logger.error("添加硬盘配置失败：\(error.localizedDescription)")
@@ -377,7 +504,9 @@ class DiskManager: ObservableObject {
     }
     
     func updateMountPoint(uuid: String, newMountPoint: String) -> (success: Bool, message: String) {
-        // 验证挂载点
+        // 验证挂载点并获取展开后的绝对路径
+        let expandedMountPoint = (newMountPoint as NSString).expandingTildeInPath
+        let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
         let validation = validateMountPoint(newMountPoint)
         if !validation.valid {
             return (false, validation.message)
@@ -393,7 +522,7 @@ class DiskManager: ObservableObject {
         
         for i in 0..<lines.count {
             if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):") {
-                lines[i] = "\(uuid):\(newMountPoint)"
+                lines[i] = "\(uuid):\(resolvedMountPoint)"
                 break
             }
         }
@@ -404,7 +533,7 @@ class DiskManager: ObservableObject {
         do {
             try content.write(toFile: configPath, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
-            logger.info("更新挂载点：\(uuid) -> \(newMountPoint)")
+            logger.info("更新挂载点：\(uuid) -> \(resolvedMountPoint)")
             return (true, "")
         } catch {
             logger.error("更新挂载点失败：\(error.localizedDescription)")
@@ -445,9 +574,9 @@ class DiskManager: ObservableObject {
 // MARK: - Helper Extension
 
 extension Sequence {
-    func takeIf(_ predicate: (Self) -> Bool) -> Self? {
+    func takeIf(_ predicate: (Array<Element>) -> Bool) -> Array<Element>? {
         let result = Array(self)
-        return predicate(result) ? result as? Self : nil
+        return predicate(result) ? result : nil
     }
 }
 
@@ -530,11 +659,17 @@ struct ContentView: View {
                                 DispatchQueue.global().async {
                                     let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                                     DispatchQueue.main.async {
-                                        alertMessage = result.message
-                                        alertIsError = !result.success
-                                        showingAlert = true
-                                        loadingStates[disk.uuid] = false
-                                        if result.success { manager.loadConfig() }
+                                        loadingStates.removeValue(forKey: disk.uuid)
+                                        if result.success {
+                                            // 从实际设备读取挂载状态
+                                            manager.updateDiskMountStatus(uuid: disk.uuid)
+                                            manager.refreshDiskUsages()
+                                        } else {
+                                            // 失败才弹窗
+                                            alertMessage = result.message
+                                            alertIsError = true
+                                            showingAlert = true
+                                        }
                                     }
                                 }
                             },
@@ -543,8 +678,41 @@ struct ContentView: View {
                                 unmountingDisk = disk
                                 showingUnmountConfirm = true
                             },
+                            onRemount: {
+                                guard !isBatchOperating else { return }
+                                loadingStates[disk.uuid] = true
+                                DispatchQueue.global().async {
+                                    // 先卸载当前挂载
+                                    let unmountResult = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
+                                    guard unmountResult.success else {
+                                        DispatchQueue.main.async {
+                                            loadingStates.removeValue(forKey: disk.uuid)
+                                            alertMessage = "卸载失败：" + unmountResult.message
+                                            alertIsError = true
+                                            showingAlert = true
+                                        }
+                                        return
+                                    }
+                                    // 再挂载到目标位置
+                                    let mountResult = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                                    DispatchQueue.main.async {
+                                        loadingStates.removeValue(forKey: disk.uuid)
+                                        if mountResult.success {
+                                            // 从实际设备读取挂载状态
+                                            manager.updateDiskMountStatus(uuid: disk.uuid)
+                                            manager.refreshDiskUsages()
+                                        } else {
+                                            alertMessage = "挂载失败：" + mountResult.message
+                                            alertIsError = true
+                                            showingAlert = true
+                                        }
+                                    }
+                                }
+                            },
                             onEdit: {
                                 guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
+                                // 打开编辑前刷新实际挂载状态
+                                manager.updateDiskMountStatus(uuid: disk.uuid)
                                 editingDisk = disk
                                 showingEditDialog = true
                             },
@@ -575,11 +743,11 @@ struct ContentView: View {
                 Button(action: { showingAddDialog = true }) {
                     Label("➕ 新增硬盘", systemImage: "plus")
                 }
-                .disabled(isBatchOperating || !loadingStates.isEmpty)
+                .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: { manager.loadConfig() }) {
                     Label("🔄 刷新", systemImage: "arrow.clockwise")
                 }
-                .disabled(isBatchOperating)
+                .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Spacer()
                 Button(action: {
                     isBatchOperating = true
@@ -589,7 +757,7 @@ struct ContentView: View {
                         }
                         DispatchQueue.main.async {
                             isBatchOperating = false
-                            manager.loadConfig()
+                            manager.loadConfig()  // 批量操作后重载，因为多个硬盘状态变化
                         }
                     }
                 }) {
@@ -600,7 +768,7 @@ struct ContentView: View {
                         Label("⬆️ 全部挂载", systemImage: "externaldrive.fill")
                     }
                 }
-                .disabled(isBatchOperating || !loadingStates.isEmpty)
+                .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
                     isBatchOperating = true
                     DispatchQueue.global().async {
@@ -609,7 +777,7 @@ struct ContentView: View {
                         }
                         DispatchQueue.main.async {
                             isBatchOperating = false
-                            manager.loadConfig()
+                            manager.loadConfig()  // 批量操作后重载，因为多个硬盘状态变化
                         }
                     }
                 }) {
@@ -620,7 +788,7 @@ struct ContentView: View {
                         Label("⬇️ 全部卸载", systemImage: "eject.fill")
                     }
                 }
-                .disabled(isBatchOperating || !loadingStates.isEmpty)
+                .disabled(isBatchOperating || loadingStates.values.contains(true))
             }
             .padding()
         }
@@ -654,7 +822,8 @@ struct ContentView: View {
                 if let disk = editingDisk, !newMountPoint.isEmpty {
                     let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
                     if result.success {
-                        manager.loadConfig()
+                        // 就地更新挂载点，不重载整个列表
+                        manager.updateDiskMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
                         showingEditDialog = false
                         editingDisk = nil
                     } else {
@@ -684,11 +853,14 @@ struct ContentView: View {
                 if let disk = unmountingDisk {
                     loadingStates[disk.uuid] = true
                     DispatchQueue.global().async {
-                        let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
+                        let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
                         DispatchQueue.main.async {
-                            loadingStates[disk.uuid] = false
-                            if result.success { manager.loadConfig() }
-                            else {
+                            loadingStates.removeValue(forKey: disk.uuid)
+                            if result.success {
+                                // 从实际设备读取挂载状态
+                                manager.updateDiskMountStatus(uuid: disk.uuid)
+                            } else {
+                                // 失败才弹窗
                                 alertMessage = result.message
                                 alertIsError = true
                                 showingAlert = true
@@ -778,11 +950,20 @@ struct DiskRow: View {
     let isBatchOperating: Bool
     let onMount: () -> Void
     let onUnmount: () -> Void
+    let onRemount: () -> Void  // 重新挂载
     let onEdit: () -> Void
     let onDelete: () -> Void
     
     private var isDisabled: Bool {
         isLoading || isBatchOperating
+    }
+    
+    private var needsRemount: Bool {
+        disk.isMounted && disk.currentMount != disk.mountPoint && !disk.currentMount.isEmpty && disk.currentMount != "-"
+    }
+    
+    private var isRemounting: Bool {
+        isLoading && disk.isMounted && needsRemount
     }
     
     var body: some View {
@@ -800,6 +981,13 @@ struct DiskRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("当前：" + disk.currentMount).font(.system(.body, design: .monospaced))
                 Text("目标：" + disk.mountPoint).font(.caption).foregroundColor(.secondary)
+                if let usage = disk.usage {
+                    Text("用量：" + usage).font(.caption).foregroundColor(.blue)
+                } else if disk.isMounted {
+                    Text("用量：获取中...").font(.caption).foregroundColor(.secondary)
+                } else {
+                    Text("用量：-").font(.caption).foregroundColor(.gray)
+                }
             }
             .frame(width: 250, alignment: .leading)
             
@@ -813,42 +1001,67 @@ struct DiskRow: View {
                 .tint(.blue)
                 .disabled(isDisabled)
                 
-                if disk.isMounted {
-                    Button(action: onUnmount) {
-                        HStack {
-                            if isLoading {
-                                ProgressView().scaleEffect(0.7)
-                            } else {
-                                Text("卸载")
-                            }
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                    .disabled(isDisabled)
-                } else {
+                HStack(spacing: 6) {
+                    // 挂载按钮（未挂载时可用）
                     Button(action: onMount) {
                         HStack {
-                            if isLoading {
+                            if isLoading && !disk.isMounted {
                                 ProgressView().scaleEffect(0.7)
                             } else {
-                                Text("挂载")
+                                Image(systemName: "externaldrive.fill")
                             }
                         }
                     }
                     .buttonStyle(.bordered)
                     .tint(.green)
+                    .disabled(isDisabled || disk.isMounted)
+                    
+                    // 卸载按钮（已挂载时可用）
+                    Button(action: onUnmount) {
+                        HStack {
+                            if isLoading && disk.isMounted && !needsRemount {
+                                ProgressView().scaleEffect(0.7)
+                            } else {
+                                Image(systemName: "eject.fill")
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                    .disabled(isDisabled || !disk.isMounted)
+                    
+                    // 重新挂载按钮（挂载点不一致时可用）
+                    Button(action: onRemount) {
+                        HStack {
+                            if isRemounting {
+                                ProgressView().scaleEffect(0.7)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.purple)
+                    .disabled(isDisabled || !needsRemount)
+                    
+                    // 编辑按钮
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.blue)
+                    .disabled(isDisabled)
+                    
+                    // 删除按钮
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
                     .disabled(isDisabled)
                 }
-                
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .disabled(isDisabled)
             }
-            .frame(width: 160, alignment: .center)
+            .frame(width: 240, alignment: .center)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.3), lineWidth: 1)
@@ -936,8 +1149,26 @@ struct AddDiskSheet: View {
                         showError = true
                         return
                     }
+                    // 提前验证路径（展开 ~ 后验证）
+                    let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
+                    let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
+                    let home = FileManager.default.homeDirectoryForCurrentUser.path
+                    
+                    // 检查是否为用户路径
+                    if !resolvedMountPoint.hasPrefix(home) {
+                        errorMessage = "挂载点必须位于用户目录下：\(home)"
+                        showError = true
+                        return
+                    }
+                    // 检查系统目录
+                    for prefix in Constants.forbiddenMountPrefixes {
+                        if resolvedMountPoint.hasPrefix(prefix) {
+                            errorMessage = "不允许挂载到系统目录：\(prefix)"
+                            showError = true
+                            return
+                        }
+                    }
                     onSave()
-                    onCancel()
                 }) {
                     HStack { Image(systemName: "disk"); Text("保存") }
                 }.buttonStyle(.borderedProminent)
@@ -1000,14 +1231,21 @@ struct AddDiskSheet: View {
                             let uuidOutput = String(data: uuidData, encoding: .utf8) ?? ""
                             
                             var volumeUUID = ""
+                            var fileSystemType = ""
                             for uuidLine in uuidOutput.components(separatedBy: "\n") {
                                 if uuidLine.contains("Volume UUID:") {
                                     let uuidParts = uuidLine.components(separatedBy: ":")
                                     if uuidParts.count == 2 { volumeUUID = uuidParts[1].trimmingCharacters(in: .whitespaces) }
                                 }
+                                // 检查文件系统类型，只保留 NTFS
+                                if uuidLine.contains("File System Personality:") {
+                                    let fsParts = uuidLine.components(separatedBy: ":")
+                                    if fsParts.count == 2 { fileSystemType = fsParts[1].trimmingCharacters(in: .whitespaces) }
+                                }
                             }
                             
-                            if !volumeUUID.isEmpty {
+                            // 只添加 NTFS 格式的硬盘
+                            if !volumeUUID.isEmpty && fileSystemType == "NTFS" {
                                 let isAdded = addedUUIDs.contains(volumeUUID)
                                 let currentMount = getCurrentMount(for: device)
                                 disks.append(PhysicalDisk(device: device, uuid: volumeUUID, volumeName: volumeName, size: currentSize ?? size, isAdded: isAdded, currentMount: currentMount))
@@ -1086,6 +1324,8 @@ struct EditMountPointSheet: View {
     let onCancel: () -> Void
     
     @State private var mountPoint = ""
+    @State private var showError = false
+    @State private var errorMessage = ""
     
     var body: some View {
         VStack(spacing: 20) {
@@ -1112,8 +1352,27 @@ struct EditMountPointSheet: View {
             HStack {
                 Button("取消", action: onCancel).buttonStyle(.bordered)
                 Spacer()
-                Button("保存", action: { onSave(mountPoint) }).buttonStyle(.borderedProminent).disabled(mountPoint.isEmpty)
+                Button("保存", action: {
+                    let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
+                    let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
+                    let home = FileManager.default.homeDirectoryForCurrentUser.path
+                    
+                    if !resolvedMountPoint.hasPrefix(home) {
+                        errorMessage = "挂载点必须位于用户目录下：\(home)"
+                        showError = true
+                        return
+                    }
+                    for prefix in Constants.forbiddenMountPrefixes {
+                        if resolvedMountPoint.hasPrefix(prefix) {
+                            errorMessage = "不允许挂载到系统目录：\(prefix)"
+                            showError = true
+                            return
+                        }
+                    }
+                    onSave(mountPoint)
+                }).buttonStyle(.borderedProminent).disabled(mountPoint.isEmpty)
             }
+            .alert("提示", isPresented: $showError) { Button("确定", role: .cancel) {} } message: { Text(errorMessage) }
         }
         .padding(30)
         .frame(minWidth: 500, minHeight: 300)
