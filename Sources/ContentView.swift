@@ -31,10 +31,11 @@ struct DiskInfo: Identifiable, Codable, Equatable {
     var currentMount: String
     var isMounted: Bool
     var usage: String?  // 如 "80Gi / 931Gi (9%)"
+    var isTimeout: Bool = false  // 标记是否查询超时
     
     var id: String { uuid }  // 使用 uuid 作为稳定标识符
     
-    init(uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil) {
+    init(uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil, isTimeout: Bool = false) {
         self.uuid = uuid
         self.volumeName = volumeName
         self.mountPoint = mountPoint
@@ -42,6 +43,7 @@ struct DiskInfo: Identifiable, Codable, Equatable {
         self.currentMount = currentMount
         self.isMounted = isMounted
         self.usage = usage
+        self.isTimeout = isTimeout
     }
 }
 
@@ -246,15 +248,20 @@ class DiskManager: ObservableObject {
         // 并行获取所有硬盘的设备信息和使用量，完成后一次性更新 UI
         let dispatchGroup = DispatchGroup()
         let infoLock = NSLock()
-        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?)] = [:]
+        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?, isTimeout: Bool)] = [:]
         
         print("🔄 开始刷新 \(disks.count) 个硬盘的设备信息（带完成回调）")
         
         for disk in disks {
             dispatchGroup.enter()
             DispatchQueue.global().async {
-                let device = self.findDevice(byUUID: disk.uuid)
-                let volumeName = self.getVolumeName(byUUID: disk.uuid)
+                var isTimeout = false
+                let device = self.runDiskUtilCommand(withTimeout: 3.0, uuid: disk.uuid, searchPattern: "Device Identifier:") {
+                    isTimeout = true
+                } ?? "未找到"
+                let volumeName = self.runDiskUtilCommand(withTimeout: 3.0, uuid: disk.uuid, searchPattern: "Volume Name:") {
+                    isTimeout = true
+                } ?? "未知"
                 let actualMount = self.getActualMountPoint(device: device)
                 let isMounted = actualMount != nil
                 
@@ -264,10 +271,10 @@ class DiskManager: ObservableObject {
                     usage = self.getDiskUsage(mountPoint: mount)
                 }
                 
-                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), usage=\(usage ?? "-")")
+                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), usage=\(usage ?? "-"), timeout=\(isTimeout)")
                 
                 infoLock.lock()
-                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage)
+                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage, isTimeout)
                 infoLock.unlock()
                 dispatchGroup.leave()
             }
@@ -279,7 +286,7 @@ class DiskManager: ObservableObject {
             // 创建全新数组，一次性更新所有数据
             let newDisks = disks.map { oldDisk -> DiskInfo in
                 if let info = updatedInfo[oldDisk.uuid] {
-                    print("✅ 更新硬盘 \(oldDisk.uuid.prefix(8)): \(info.device)/\(info.isMounted), usage=\(info.usage ?? "nil")")
+                    print("✅ 更新硬盘 \(oldDisk.uuid.prefix(8)): \(info.device)/\(info.isMounted), usage=\(info.usage ?? "nil"), timeout=\(info.isTimeout)")
                     return DiskInfo(
                         uuid: oldDisk.uuid,
                         volumeName: info.volumeName,
@@ -287,7 +294,8 @@ class DiskManager: ObservableObject {
                         device: info.device,
                         currentMount: info.currentMount,
                         isMounted: info.isMounted,
-                        usage: info.usage
+                        usage: info.usage,
+                        isTimeout: info.isTimeout
                     )
                 }
                 return oldDisk
@@ -309,7 +317,7 @@ class DiskManager: ObservableObject {
         return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Volume Name:") ?? "未知"
     }
     
-    func runDiskUtilCommand(withTimeout timeout: TimeInterval, uuid: String, searchPattern: String) -> String? {
+    func runDiskUtilCommand(withTimeout timeout: TimeInterval, uuid: String, searchPattern: String, onTimeout: (() -> Void)? = nil) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
         task.arguments = ["info", uuid]
@@ -336,6 +344,7 @@ class DiskManager: ObservableObject {
                         task.interrupt()
                         logger.warning("diskutil 命令超时后强制终止 (\(timeout) 秒)，uuid=\(uuid.prefix(8))...")
                     }
+                    onTimeout?()
                     return nil
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -1277,7 +1286,10 @@ struct DiskRow: View {
                 HStack(spacing: 6) {
                     Text(disk.device).font(.system(.body, design: .monospaced))
                     Text(disk.volumeName).font(.system(.body, design: .monospaced)).foregroundColor(.blue)
-                    if disk.device == "查询中…" {
+                    if disk.isTimeout {
+                        Text("⚠️ 获取超时")
+                            .font(.caption).foregroundColor(.red)
+                    } else if disk.device == "查询中…" {
                         Text("⏳ 查询中…")
                             .font(.caption).foregroundColor(.secondary)
                     } else {
