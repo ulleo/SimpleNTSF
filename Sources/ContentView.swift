@@ -327,8 +327,15 @@ class DiskManager: ObservableObject {
             let startTime = Date()
             while task.isRunning {
                 if Date().timeIntervalSince(startTime) > timeout {
+                    // 先尝试温和终止
                     task.terminate()
-                    logger.warning("diskutil 命令超时 (\(timeout) 秒)，uuid=\(uuid.prefix(8))...")
+                    // 给 0.5 秒时间让它自己退出
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                    if task.isRunning {
+                        // 强制杀死
+                        task.interrupt()
+                        logger.warning("diskutil 命令超时后强制终止 (\(timeout) 秒)，uuid=\(uuid.prefix(8))...")
+                    }
                     return nil
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -393,7 +400,11 @@ class DiskManager: ObservableObject {
             while task.isRunning {
                 if Date().timeIntervalSince(startTime) > timeout {
                     task.terminate()
-                    logger.warning("mount 命令超时 (\(timeout) 秒)，device=\(device)")
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                    if task.isRunning {
+                        task.interrupt()
+                        logger.warning("mount 命令超时后强制终止 (\(timeout) 秒)，device=\(device)")
+                    }
                     return nil
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -438,7 +449,11 @@ class DiskManager: ObservableObject {
             while task.isRunning {
                 if Date().timeIntervalSince(startTime) > timeout {
                     task.terminate()
-                    logger.warning("df 命令超时 (\(timeout) 秒)，mountPoint=\(mountPoint)")
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                    if task.isRunning {
+                        task.interrupt()
+                        logger.warning("df 命令超时后强制终止 (\(timeout) 秒)，mountPoint=\(mountPoint)")
+                    }
                     return nil
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
