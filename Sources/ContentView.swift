@@ -362,21 +362,29 @@ class DiskManager: ObservableObject {
     }
     
     func refreshDiskUsages() {
-        // 异步获取所有已挂载磁盘的使用量
+        // 并行异步获取所有已挂载磁盘的使用量
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
             var updatedUsages: [UUID: String?] = [:]
+            let dispatchGroup = DispatchGroup()
+            let usageLock = NSLock()
             
             for disk in self.disks {
                 if disk.isMounted {
-                    let usage = self.getDiskUsage(mountPoint: disk.mountPoint)
-                    updatedUsages[disk.id] = usage
+                    dispatchGroup.enter()
+                    DispatchQueue.global().async {
+                        let usage = self.getDiskUsage(mountPoint: disk.mountPoint)
+                        usageLock.lock()
+                        updatedUsages[disk.id] = usage
+                        usageLock.unlock()
+                        dispatchGroup.leave()
+                    }
                 } else {
                     updatedUsages[disk.id] = nil
                 }
             }
             
-            DispatchQueue.main.async {
+            dispatchGroup.notify(queue: .main) {
                 for i in 0..<self.disks.count {
                     if let usage = updatedUsages[self.disks[i].id] {
                         self.disks[i].usage = usage
@@ -386,18 +394,21 @@ class DiskManager: ObservableObject {
         }
     }
     
-    func updateDiskMountStatus(uuid: String) {
-        // 就地更新指定硬盘的挂载状态（从实际设备读取），避免重载整个列表
-        for i in 0..<disks.count {
-            if disks[i].uuid == uuid {
-                let device = findDevice(byUUID: uuid)
-                let volumeName = getVolumeName(byUUID: uuid)
-                disks[i].device = device
-                disks[i].volumeName = volumeName
-                let actualMount = getActualMountPoint(device: device)
-                disks[i].isMounted = actualMount != nil
-                disks[i].currentMount = actualMount ?? "-"
-                break
+    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5) {
+        // 延时后更新指定硬盘的挂载状态（从实际设备读取），避免系统状态未及时刷新
+        DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
+            guard let self = self else { return }
+            for i in 0..<self.disks.count {
+                if self.disks[i].uuid == uuid {
+                    let device = self.findDevice(byUUID: uuid)
+                    let volumeName = self.getVolumeName(byUUID: uuid)
+                    self.disks[i].device = device
+                    self.disks[i].volumeName = volumeName
+                    let actualMount = self.getActualMountPoint(device: device)
+                    self.disks[i].isMounted = actualMount != nil
+                    self.disks[i].currentMount = actualMount ?? "-"
+                    break
+                }
             }
         }
     }
@@ -701,8 +712,8 @@ struct ContentView: View {
                                     DispatchQueue.main.async {
                                         loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
-                                            // 从实际设备读取挂载状态
-                                            manager.updateDiskMountStatus(uuid: disk.uuid)
+                                            // 从实际设备读取挂载状态（延时 0.5 秒让系统状态更新）
+                                            manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
                                             manager.refreshDiskUsages()
                                         } else {
                                             // 失败才弹窗
@@ -871,8 +882,8 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 从实际设备读取挂载状态
-                                manager.updateDiskMountStatus(uuid: disk.uuid)
+                                // 从实际设备读取挂载状态（延时 0.5 秒让系统状态更新）
+                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
                             } else {
                                 // 失败才弹窗
                                 alertMessage = result.message
@@ -908,8 +919,8 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 从实际设备读取挂载状态
-                                manager.updateDiskMountStatus(uuid: disk.uuid)
+                                // 从实际设备读取挂载状态（延时 0.5 秒让系统状态更新）
+                                manager.updateDiskMountStatus(uuid: disk.uuid, delaySeconds: 0.5)
                                 manager.refreshDiskUsages()
                             } else {
                                 alertMessage = "挂载失败：" + mountResult.message
