@@ -838,6 +838,7 @@ struct ContentView: View {
     @State private var setupResult: String?
     @State private var setupSuccess = false
     @State private var showingAlert = false
+    @State private var isPasswordFree = false
     // Loading 状态管理
     @State private var loadingStates: [String: Bool] = [:]  // UUID -> isLoading
     @State private var isBatchOperating = false  // 批量操作中
@@ -1164,20 +1165,24 @@ struct ContentView: View {
         } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
+            // 检查 sudo 免密状态（只检查一次）
+            checkPasswordFreeStatus()
             // 延时后重新加载配置（多次调用确保刷新）
             self.refreshWithLoading()
         }
     }
     
-    var isPasswordFree: Bool {
+    func checkPasswordFreeStatus() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         task.arguments = ["-n", "true"]
         do {
             try task.run()
             task.waitUntilExit()
-            return task.terminationStatus == 0
-        } catch { return false }
+            isPasswordFree = (task.terminationStatus == 0)
+        } catch {
+            isPasswordFree = false
+        }
     }
     
     /// 带 loading 状态的刷新（多次调用确保刷新）
