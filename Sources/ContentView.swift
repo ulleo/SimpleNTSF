@@ -927,7 +927,7 @@ struct ContentView: View {
             // Bottom buttons
             HStack {
                 Button(action: { showingAddDialog = true }) {
-                    Label("➕ 新增硬盘", systemImage: "plus")
+                    Text("➕ 新增硬盘")
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -942,7 +942,7 @@ struct ContentView: View {
                         if isRefreshing {
                             ProgressView().scaleEffect(0.7)
                         }
-                        Label("🔄 刷新", systemImage: "arrow.clockwise")
+                        Text("🔄 刷新")
                     }
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
@@ -963,7 +963,7 @@ struct ContentView: View {
                         if isBatchOperating {
                             ProgressView().scaleEffect(0.8)
                         }
-                        Label("⬆️ 全部挂载", systemImage: "externaldrive.fill")
+                        Text("⬆️ 全部挂载")
                     }
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
@@ -983,7 +983,7 @@ struct ContentView: View {
                         if isBatchOperating {
                             ProgressView().scaleEffect(0.8)
                         }
-                        Label("⬇️ 全部卸载", systemImage: "eject.fill")
+                        Text("⬇️ 全部卸载")
                     }
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
