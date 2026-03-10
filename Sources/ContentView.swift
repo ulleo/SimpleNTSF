@@ -640,7 +640,7 @@ class DiskManager: ObservableObject {
         // ntfs-3g 完整挂载命令：设备 挂载点 -o local -o auto_xattr -o volname="..."
         // 从挂载点路径提取卷名（最后一段）
         let volumeName = (resolvedMountPoint as NSString).lastPathComponent
-        task.arguments = [
+        let args: [String] = [
             "-n",
             Constants.mountNTFSPath,
             "/dev/" + device,
@@ -649,6 +649,9 @@ class DiskManager: ObservableObject {
             "-o", "auto_xattr",
             "-o", "volname=\(volumeName)"
         ]
+        task.arguments = args
+        
+        print("🔗 执行挂载命令：\(args.joined(separator: " "))")
         
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -667,15 +670,23 @@ class DiskManager: ObservableObject {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
             
+            print("📊 挂载命令退出码：\(task.terminationStatus)")
+            if !errorMessage.isEmpty {
+                print("⚠️ 挂载错误输出：\(errorMessage)")
+            }
+            
             if task.terminationStatus == 0 {
                 logger.info("挂载成功：\(uuid) -> \(mountPoint)")
+                print("✅ 挂载成功：\(device) -> \(resolvedMountPoint)")
                 return (true, "挂载成功！")
             } else {
                 logger.error("挂载失败：\(errorMessage)")
+                print("❌ 挂载失败：\(errorMessage)")
                 return (false, errorMessage.isEmpty ? "挂载失败" : errorMessage)
             }
         } catch {
             logger.error("执行挂载命令失败：\(error.localizedDescription)")
+            print("❌ 执行挂载命令失败：\(error.localizedDescription)")
             return (false, "执行失败：\(error.localizedDescription)")
         }
     }
@@ -686,7 +697,10 @@ class DiskManager: ObservableObject {
         
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        task.arguments = ["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/" + device]
+        let args: [String] = ["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/" + device]
+        task.arguments = args
+        
+        print("🔗 执行卸载命令：\(args.joined(separator: " "))")
         
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -705,15 +719,23 @@ class DiskManager: ObservableObject {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
             
+            print("📊 卸载命令退出码：\(task.terminationStatus)")
+            if !errorMessage.isEmpty {
+                print("⚠️ 卸载错误输出：\(errorMessage)")
+            }
+            
             if task.terminationStatus == 0 {
                 logger.info("卸载成功：\(uuid)")
+                print("✅ 卸载成功：\(device)")
                 return (true, "卸载成功！")
             } else {
                 logger.error("卸载失败：\(errorMessage)")
+                print("❌ 卸载失败：\(errorMessage)")
                 return (false, errorMessage.isEmpty ? "卸载失败" : errorMessage)
             }
         } catch {
             logger.error("执行卸载命令失败：\(error.localizedDescription)")
+            print("❌ 执行卸载命令失败：\(error.localizedDescription)")
             return (false, "执行失败：\(error.localizedDescription)")
         }
     }
