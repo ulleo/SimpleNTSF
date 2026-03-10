@@ -353,7 +353,10 @@ class DiskManager: ObservableObject {
                 return oldDisk
             }
             
-            self.disks = newDisks
+            withAnimation(.none) {
+                self.disks = newDisks
+            }
+            // @Published 赋值后会自动触发通知
             print("所有硬盘设备信息已更新，disks 数组已替换")
         }
     }
