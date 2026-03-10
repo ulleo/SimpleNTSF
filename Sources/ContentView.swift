@@ -113,7 +113,7 @@ class DiskManager: ObservableObject {
     }()
     
     init() {
-        loadConfig()
+        // 不在这里调用 loadConfig，由 ContentView.onAppear 调用
     }
     
     // MARK: - Validation
@@ -155,6 +155,8 @@ class DiskManager: ObservableObject {
     // MARK: - Config Operations
     
     func loadConfig() {
+        print("=== loadConfig 开始 ===")
+        
         // 在后台异步加载配置，避免阻塞 UI
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
@@ -163,16 +165,29 @@ class DiskManager: ObservableObject {
             defer { self.fileLock.unlock() }
             
             // 复制当前 disks 快照，保留现有状态
-            let oldDisksSnapshot: [DiskInfo] = DispatchQueue.main.sync { self.disks }
+            let oldDisksSnapshot: [DiskInfo] = DispatchQueue.main.sync {
+                let snapshot = self.disks
+                print("旧 disks 快照：\(snapshot.count) 个")
+                for d in snapshot {
+                    print("  旧：\(d.uuid.prefix(8))... device=\(d.device), volume=\(d.volumeName), mounted=\(d.isMounted), usage=\(d.usage ?? "nil")")
+                }
+                return snapshot
+            }
             
             var newDisks: [DiskInfo] = []
             
-            guard FileManager.default.fileExists(atPath: self.configPath) else { return }
+            guard FileManager.default.fileExists(atPath: self.configPath) else {
+                print("❌ 配置文件不存在：\(self.configPath)")
+                return
+            }
             
             guard let content = try? String(contentsOfFile: self.configPath, encoding: .utf8),
                   let lines = content.components(separatedBy: "\n").filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }).takeIf({ !$0.isEmpty }) else {
+                print("❌ 配置文件为空或无法读取")
                 return
             }
+            
+            print("配置文件有 \(lines.count) 行有效配置")
             
             // 第一步：解析配置，从旧数据中保留所有状态
             for line in lines {
@@ -186,20 +201,20 @@ class DiskManager: ObservableObject {
                     
                     // 验证 UUID 格式
                     guard self.isValidUUID(uuid) else {
-                        logger.warning("跳过无效的 UUID 格式：\(uuid)")
+                        print("⚠️ 跳过无效的 UUID 格式：\(uuid)")
                         continue
                     }
                     
                     // 验证挂载点
                     let validation = self.validateMountPoint(mountPoint)
                     if !validation.valid {
-                        logger.warning("跳过无效的挂载点：\(mountPoint) - \(validation.message)")
+                        print("⚠️ 跳过无效的挂载点：\(mountPoint) - \(validation.message)")
                         continue
                     }
                     
                     // 从旧数据中查找并保留所有状态
                     let oldDisk = oldDisksSnapshot.first(where: { $0.uuid == uuid })
-                    newDisks.append(DiskInfo(
+                    let newDisk = DiskInfo(
                         uuid: uuid,
                         volumeName: oldDisk?.volumeName ?? "加载中...",
                         mountPoint: mountPoint,
@@ -207,16 +222,20 @@ class DiskManager: ObservableObject {
                         currentMount: oldDisk?.currentMount ?? "-",
                         isMounted: oldDisk?.isMounted ?? false,
                         usage: oldDisk?.usage  // 保留旧的使用量值
-                    ))
+                    )
+                    newDisks.append(newDisk)
+                    print("新：\(uuid.prefix(8))... device=\(newDisk.device), volume=\(newDisk.volumeName), mounted=\(newDisk.isMounted), usage=\(newDisk.usage ?? "nil")")
                 }
             }
             
             // 在主线程更新列表
             DispatchQueue.main.async {
+                print("准备更新 self.disks = \(newDisks.count) 个")
                 self.disks = newDisks
-                logger.info("加载配置完成，共 \(self.disks.count) 个硬盘")
+                print("self.disks 已更新，当前 \(self.disks.count) 个")
                 
                 // 第二步：并行刷新所有设备信息（后台异步，不阻塞 UI）
+                print("调用 refreshAllDiskInfo()")
                 self.refreshAllDiskInfo()
             }
         }
@@ -231,6 +250,8 @@ class DiskManager: ObservableObject {
         // 复制当前 disks 快照，避免遍历时数组变化
         let disksSnapshot = self.disks
         
+        print("🔄 开始刷新 \(disksSnapshot.count) 个硬盘的设备信息")
+        
         for disk in disksSnapshot {
             dispatchGroup.enter()
             DispatchQueue.global().async {
@@ -238,6 +259,8 @@ class DiskManager: ObservableObject {
                 let volumeName = self.getVolumeName(byUUID: disk.uuid)
                 let actualMount = self.getActualMountPoint(device: device)
                 let isMounted = actualMount != nil
+                
+                print("  硬盘 \(disk.uuid.prefix(8)): device=\(device), volume=\(volumeName), mounted=\(isMounted), mount=\(actualMount ?? "-")")
                 
                 infoLock.lock()
                 updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-")
@@ -247,22 +270,35 @@ class DiskManager: ObservableObject {
         }
         
         dispatchGroup.notify(queue: .main) {
-            // 更新所有硬盘的设备信息
+            print("设备信息查询完成，开始更新 UI")
+            
+            // 创建新数组替换旧数组，强制 SwiftUI 重新渲染
+            var updatedDisks = self.disks
             var hasChanges = false
-            for i in 0..<self.disks.count {
-                if let info = updatedInfo[self.disks[i].uuid] {
-                    self.disks[i].device = info.device
-                    self.disks[i].volumeName = info.volumeName
-                    self.disks[i].isMounted = info.isMounted
-                    self.disks[i].currentMount = info.currentMount
-                    hasChanges = true
+            
+            for (uuid, info) in updatedInfo {
+                if let index = updatedDisks.firstIndex(where: { $0.uuid == uuid }) {
+                    let oldDevice = updatedDisks[index].device
+                    let oldMounted = updatedDisks[index].isMounted
+                    if oldDevice != info.device || oldMounted != info.isMounted {
+                        hasChanges = true
+                        print("✅ 更新硬盘 \(uuid.prefix(8)): \(oldDevice)/\(oldMounted) -> \(info.device)/\(info.isMounted)")
+                    }
+                    updatedDisks[index].device = info.device
+                    updatedDisks[index].volumeName = info.volumeName
+                    updatedDisks[index].isMounted = info.isMounted
+                    updatedDisks[index].currentMount = info.currentMount
+                } else {
+                    print("⚠️ 未找到 UUID=\(uuid.prefix(8)) 的硬盘")
                 }
             }
             
             if hasChanges {
-                // 强制触发 SwiftUI 更新
-                self.objectWillChange.send()
-                logger.info("所有硬盘设备信息已更新")
+                // 替换整个数组，强制 SwiftUI 重新渲染
+                self.disks = updatedDisks
+                print("所有硬盘设备信息已更新，disks 数组已替换")
+            } else {
+                print("⚠️ 没有硬盘信息被更新")
             }
             
             // 使用更新后的 disks 状态获取使用量（并行）
@@ -876,7 +912,14 @@ struct ContentView: View {
                     Label("➕ 新增硬盘", systemImage: "plus")
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
-                Button(action: { manager.loadConfig() }) {
+                Button(action: {
+                    print("\n=== 手动刷新按钮被点击 ===")
+                    print("刷新前 disks: \(manager.disks.count) 个")
+                    for d in manager.disks {
+                        print("  \(d.uuid.prefix(8)): device=\(d.device), mounted=\(d.isMounted), usage=\(d.usage ?? "nil")")
+                    }
+                    manager.loadConfig()
+                }) {
                     Label("🔄 刷新", systemImage: "arrow.clockwise")
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
@@ -1044,6 +1087,11 @@ struct ContentView: View {
                 }
             }
         } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
+        .onAppear {
+            print("\n=== ContentView.onAppear 被调用 ===")
+            print("调用 manager.loadConfig()")
+            manager.loadConfig()
+        }
     }
     
     var isPasswordFree: Bool {
