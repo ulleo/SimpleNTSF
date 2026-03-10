@@ -1112,8 +1112,14 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if result.success {
-                                // 延时后重新加载配置
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                // 延时后重新加载配置（多次调用确保刷新）
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    manager.loadConfig()
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                    manager.loadConfig()
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                                     manager.loadConfig()
                                 }
                             } else {
@@ -1150,8 +1156,14 @@ struct ContentView: View {
                         DispatchQueue.main.async {
                             loadingStates.removeValue(forKey: disk.uuid)
                             if mountResult.success {
-                                // 延时后重新加载配置
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                // 延时后重新加载配置（多次调用确保刷新）
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    manager.loadConfig()
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                    manager.loadConfig()
+                                }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                                     manager.loadConfig()
                                 }
                             } else {
@@ -1168,8 +1180,14 @@ struct ContentView: View {
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
             manager.loadConfig()
-            // 延时后重新加载配置
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            // 延时后重新加载配置（多次调用确保刷新）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                manager.loadConfig()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                manager.loadConfig()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                 manager.loadConfig()
             }
         }
