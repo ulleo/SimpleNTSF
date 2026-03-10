@@ -927,7 +927,14 @@ struct ContentView: View {
             // Bottom buttons
             HStack {
                 Button(action: { showingAddDialog = true }) {
-                    Label("新增硬盘", systemImage: "plus")
+                    HStack {
+                        if isBatchOperating || loadingStates.values.contains(true) {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Label("新增硬盘", systemImage: "plus")
+                        }
+                    }
+                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -941,9 +948,11 @@ struct ContentView: View {
                     HStack {
                         if isRefreshing {
                             ProgressView().scaleEffect(0.7)
+                        } else {
+                            Label("刷新", systemImage: "arrow.clockwise")
                         }
-                        Label("刷新", systemImage: "arrow.clockwise")
                     }
+                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
                 Spacer()
@@ -962,9 +971,11 @@ struct ContentView: View {
                     HStack {
                         if isBatchOperating {
                             ProgressView().scaleEffect(0.8)
+                        } else {
+                            Label("全部挂载", systemImage: "externaldrive.fill")
                         }
-                        Label("全部挂载", systemImage: "externaldrive.fill")
                     }
+                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
@@ -982,9 +993,11 @@ struct ContentView: View {
                     HStack {
                         if isBatchOperating {
                             ProgressView().scaleEffect(0.8)
+                        } else {
+                            Label("全部卸载", systemImage: "eject.fill")
                         }
-                        Label("全部卸载", systemImage: "eject.fill")
                     }
+                    .frame(minWidth: 80, minHeight: 22)
                 }
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
             }
