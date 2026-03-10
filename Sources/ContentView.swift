@@ -1165,7 +1165,7 @@ struct ContentView: View {
         } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
         .onAppear {
             print("\n=== ContentView.onAppear 被调用 ===")
-            // 检查 sudo 免密状态（只检查一次）
+            // 每次打开窗口都重新检查 sudo 免密状态
             checkPasswordFreeStatus()
             // 延时后重新加载配置（多次调用确保刷新）
             self.refreshWithLoading()
@@ -1173,14 +1173,18 @@ struct ContentView: View {
     }
     
     func checkPasswordFreeStatus() {
+        print("🔐 检查 sudo 免密状态...")
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         task.arguments = ["-n", "true"]
         do {
             try task.run()
             task.waitUntilExit()
-            isPasswordFree = (task.terminationStatus == 0)
+            let result = (task.terminationStatus == 0)
+            print("sudo 免密状态：\(result ? "✅ 已配置" : "❌ 未配置")")
+            isPasswordFree = result
         } catch {
+            print("sudo 检查失败：\(error.localizedDescription)")
             isPasswordFree = false
         }
     }
