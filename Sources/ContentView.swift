@@ -637,21 +637,18 @@ class DiskManager: ObservableObject {
         
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        // ntfs-3g 完整挂载命令：设备 挂载点 -o local -o auto_xattr -o auto_cache -o uid= -o gid= -o umask= -o volname="..."
+        // ntfs-3g 完整挂载命令：设备 挂载点 -o local -o allow_other -o auto_xattr -o auto_cache -o volname="..."
         // 从挂载点路径提取卷名（最后一段）
         let volumeName = (resolvedMountPoint as NSString).lastPathComponent
-        // macOS 上第一个用户的 uid 通常是 501，gid 20 是 staff 组
         let args: [String] = [
             "-n",
             Constants.mountNTFSPath,
             "/dev/" + device,
             resolvedMountPoint,
             "-o", "local",
+            "-o", "allow_other",
             "-o", "auto_xattr",
             "-o", "auto_cache",
-            "-o", "uid=501",
-            "-o", "gid=20",
-            "-o", "umask=022",
             "-o", "volname=\(volumeName)"
         ]
         task.arguments = args
