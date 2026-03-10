@@ -937,6 +937,8 @@ struct ContentView: View {
                     }
                     .frame(width: 100)
                 }
+                .buttonStyle(.bordered)
+                .tint(.blue)
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
                     print("\n=== 手动刷新按钮被点击 ===")
@@ -956,6 +958,8 @@ struct ContentView: View {
                     }
                     .frame(width: 100)
                 }
+                .buttonStyle(.bordered)
+                .tint(.gray)
                 .disabled(isBatchOperating || loadingStates.values.contains(true) || isRefreshing)
                 Spacer()
                 Button(action: {
@@ -980,6 +984,8 @@ struct ContentView: View {
                     }
                     .frame(width: 100)
                 }
+                .buttonStyle(.bordered)
+                .tint(.green)
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
                 Button(action: {
                     isBatchOperating = true
@@ -1003,6 +1009,8 @@ struct ContentView: View {
                     }
                     .frame(width: 100)
                 }
+                .buttonStyle(.bordered)
+                .tint(.orange)
                 .disabled(isBatchOperating || loadingStates.values.contains(true))
             }
             .padding()
@@ -1290,6 +1298,7 @@ struct DiskRow: View {
                 .buttonStyle(.bordered)
                 .tint(.green)
                 .disabled(isDisabled || disk.isMounted)
+                .help("挂载")
                 
                 // 卸载按钮（已挂载时可用）
                 Button(action: onUnmount) {
@@ -1304,6 +1313,7 @@ struct DiskRow: View {
                 .buttonStyle(.bordered)
                 .tint(.orange)
                 .disabled(isDisabled || !disk.isMounted)
+                .help("卸载")
                 
                 // 重新挂载按钮（挂载点不一致时可用）
                 Button(action: onRemount) {
@@ -1318,6 +1328,7 @@ struct DiskRow: View {
                 .buttonStyle(.bordered)
                 .tint(.purple)
                 .disabled(isDisabled || !needsRemount)
+                .help("重新挂载")
                 
                 // 编辑按钮
                 Button(action: onEdit) {
@@ -1326,6 +1337,7 @@ struct DiskRow: View {
                 .buttonStyle(.bordered)
                 .tint(.blue)
                 .disabled(isDisabled)
+                .help("修改挂载点")
                 
                 // 删除按钮
                 Button(action: onDelete) {
@@ -1334,6 +1346,7 @@ struct DiskRow: View {
                 .buttonStyle(.bordered)
                 .tint(.red)
                 .disabled(isDisabled)
+                .help("删除")
             }
             .frame(width: 240, alignment: .center)
         }
