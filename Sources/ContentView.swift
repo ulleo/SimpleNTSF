@@ -892,9 +892,9 @@ struct ContentView: View {
             // Disk list
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach($manager.disks) { $disk in
+                    ForEach(manager.disks) { disk in
                         DiskRow(
-                            disk: $disk,
+                            disk: disk,
                             isLoading: loadingStates[disk.uuid] ?? false,
                             isBatchOperating: isBatchOperating,
                             onMount: {
@@ -1219,7 +1219,7 @@ struct ContentView: View {
 // MARK: - Disk Row
 
 struct DiskRow: View {
-    @Binding var disk: DiskInfo
+    let disk: DiskInfo
     let isLoading: Bool
     let isBatchOperating: Bool
     let onMount: () -> Void
