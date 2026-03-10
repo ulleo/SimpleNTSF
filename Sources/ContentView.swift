@@ -302,38 +302,14 @@ class DiskManager: ObservableObject {
     }
     
     func findDevice(byUUID uuid: String) -> String {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
-        task.arguments = ["info", uuid]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        
-        defer {
-            pipe.fileHandleForReading.closeFile()
-        }
-        
-        do {
-            try task.run()
-            task.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            
-            for line in output.components(separatedBy: "\n") {
-                if line.contains("Device Identifier:") {
-                    let parts = line.split(separator: ":")
-                    if parts.count == 2 {
-                        return String(parts[1]).trimmingCharacters(in: .whitespaces)
-                    }
-                }
-            }
-        } catch {
-            logger.error("查找设备失败：\(error.localizedDescription)")
-        }
-        return "未找到"
+        return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Device Identifier:") ?? "未找到"
     }
     
     func getVolumeName(byUUID uuid: String) -> String {
+        return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Volume Name:") ?? "未知"
+    }
+    
+    func runDiskUtilCommand(withTimeout timeout: TimeInterval, uuid: String, searchPattern: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
         task.arguments = ["info", uuid]
@@ -346,13 +322,23 @@ class DiskManager: ObservableObject {
         
         do {
             try task.run()
-            task.waitUntilExit()
+            
+            // 等待超时或完成
+            let startTime = Date()
+            while task.isRunning {
+                if Date().timeIntervalSince(startTime) > timeout {
+                    task.terminate()
+                    logger.warning("diskutil 命令超时 (\(timeout) 秒)，uuid=\(uuid.prefix(8))...")
+                    return nil
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
             
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             
             for line in output.components(separatedBy: "\n") {
-                if line.contains("Volume Name:") {
+                if line.contains(searchPattern) {
                     let parts = line.split(separator: ":")
                     if parts.count == 2 {
                         return String(parts[1]).trimmingCharacters(in: .whitespaces)
@@ -360,9 +346,9 @@ class DiskManager: ObservableObject {
                 }
             }
         } catch {
-            logger.error("获取卷名失败：\(error.localizedDescription)")
+            logger.error("diskutil 命令失败：\(error.localizedDescription)")
         }
-        return "未知"
+        return nil
     }
     
     func checkMounted(at mountPoint: String) -> Bool {
@@ -387,7 +373,10 @@ class DiskManager: ObservableObject {
     }
     
     func getActualMountPoint(device: String) -> String? {
-        // 检查设备实际挂载在哪里
+        return runMountCommand(withTimeout: 2.0, device: device)
+    }
+    
+    func runMountCommand(withTimeout timeout: TimeInterval, device: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/sbin/mount")
         let pipe = Pipe()
@@ -399,16 +388,25 @@ class DiskManager: ObservableObject {
         
         do {
             try task.run()
+            
+            let startTime = Date()
+            while task.isRunning {
+                if Date().timeIntervalSince(startTime) > timeout {
+                    task.terminate()
+                    logger.warning("mount 命令超时 (\(timeout) 秒)，device=\(device)")
+                    return nil
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+            
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             
             for line in output.components(separatedBy: "\n") {
                 if line.contains("/dev/\(device) ") {
-                    // 格式：/dev/diskXsY on /path/to/mount (ntfs, ...)
                     let parts = line.components(separatedBy: " on ")
                     if parts.count >= 2 {
-                        let mountPath = parts[1].split(separator: " ").first.map(String.init)
-                        return mountPath
+                        return parts[1].split(separator: " ").first.map(String.init)
                     }
                 }
             }
@@ -419,6 +417,10 @@ class DiskManager: ObservableObject {
     }
     
     func getDiskUsage(mountPoint: String) -> String? {
+        return runDfCommand(withTimeout: 2.0, mountPoint: mountPoint)
+    }
+    
+    func runDfCommand(withTimeout timeout: TimeInterval, mountPoint: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/df")
         task.arguments = ["-h", mountPoint]
@@ -431,18 +433,27 @@ class DiskManager: ObservableObject {
         
         do {
             try task.run()
-            task.waitUntilExit()
+            
+            let startTime = Date()
+            while task.isRunning {
+                if Date().timeIntervalSince(startTime) > timeout {
+                    task.terminate()
+                    logger.warning("df 命令超时 (\(timeout) 秒)，mountPoint=\(mountPoint)")
+                    return nil
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+            
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             
-            // df -h 输出格式：Filesystem Size Used Avail Capacity iused ifree %iused Mounted on
             let lines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
             if lines.count >= 2 {
                 let parts = lines[1].components(separatedBy: " ").filter { !$0.isEmpty }
                 if parts.count >= 5 {
                     let used = parts[2]
                     let total = parts[1]
-                    let capacity = parts[4]  // 如 "4%"
+                    let capacity = parts[4]
                     return "\(used) / \(total) (\(capacity))"
                 }
             }
