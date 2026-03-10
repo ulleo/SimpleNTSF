@@ -933,8 +933,14 @@ struct ContentView: View {
                                     DispatchQueue.main.async {
                                         loadingStates.removeValue(forKey: disk.uuid)
                                         if result.success {
-                                            // 延时后刷新所有硬盘状态
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                            // 延时后刷新所有硬盘状态（多次调用确保刷新）
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                                manager.loadConfig()
+                                            }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                                manager.loadConfig()
+                                            }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                                                 manager.loadConfig()
                                             }
                                         } else {
@@ -1008,9 +1014,15 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        // 等待系统状态刷新后重新加载配置
+                        // 等待系统状态刷新后重新加载配置（多次调用确保刷新）
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                             isBatchOperating = false
+                            manager.loadConfig()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            manager.loadConfig()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
                             manager.loadConfig()
                         }
                     }
@@ -1029,9 +1041,15 @@ struct ContentView: View {
                         for disk in manager.disks {
                             _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
-                        // 等待系统状态刷新后重新加载配置
+                        // 等待系统状态刷新后重新加载配置（多次调用确保刷新）
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                             isBatchOperating = false
+                            manager.loadConfig()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            manager.loadConfig()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
                             manager.loadConfig()
                         }
                     }
@@ -1057,7 +1075,16 @@ struct ContentView: View {
             AddDiskSheet(uuid: $newUUID, mountPoint: $newMountPoint, onSave: {
                 let result = manager.addDisk(uuid: newUUID, mountPoint: newMountPoint)
                 if result.success {
-                    manager.loadConfig()
+                    // 延时后刷新（多次调用确保刷新）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        manager.loadConfig()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        manager.loadConfig()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        manager.loadConfig()
+                    }
                     showingAddDialog = false
                     newUUID = ""
                     newMountPoint = ""
@@ -1097,7 +1124,18 @@ struct ContentView: View {
             Button("删除", role: .destructive) {
                 if let disk = deletingDisk {
                     let success = manager.deleteDisk(uuid: disk.uuid)
-                    if success { manager.loadConfig() }
+                    if success {
+                        // 延时后刷新（多次调用确保刷新）
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            manager.loadConfig()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            manager.loadConfig()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                            manager.loadConfig()
+                        }
+                    }
                     deletingDisk = nil
                 }
             }
