@@ -36,8 +36,17 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // Header with config button
             VStack(spacing: 8) {
-                Text("📀 SimpleNTFS")
-                    .font(.title2.bold())
+                HStack(spacing: 4) {
+                    Text("📀 SimpleNTFS")
+                        .font(.title2.bold())
+                    Text("v\(Constants.appVersion)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.gray.opacity(0.15))
+                        .cornerRadius(4)
+                }
                 
                 HStack(spacing: 6) {
                     Button(action: {

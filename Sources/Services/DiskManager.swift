@@ -530,17 +530,32 @@ class DiskManager: ObservableObject {
         let errorPipe = Pipe()
         task.standardError = errorPipe
         
-        defer {
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-        }
+        // 使用信号量 + 超时，防止无限等待
+        let semaphore = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in semaphore.signal() }
         
         do {
             try task.run()
-            task.waitUntilExit()
+            
+            let result = semaphore.wait(timeout: .now() + 15)
+            
+            if result == .timedOut {
+                task.terminate()
+                Thread.sleep(forTimeInterval: 0.5)
+                if task.isRunning {
+                    task.interrupt()
+                }
+                pipe.fileHandleForReading.closeFile()
+                errorPipe.fileHandleForReading.closeFile()
+                logger.warning("挂载命令超时 (15秒)，uuid=\(uuid.prefix(8))...")
+                return (false, "挂载超时")
+            }
             
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
+            
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
             
             if task.terminationStatus == 0 {
                 logger.info("挂载成功：\(uuid) -> \(mountPoint)")
@@ -550,6 +565,8 @@ class DiskManager: ObservableObject {
                 return (false, errorMessage.isEmpty ? "挂载失败" : errorMessage)
             }
         } catch {
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
             logger.error("执行挂载命令失败：\(error.localizedDescription)")
             return (false, "执行失败：\(error.localizedDescription)")
         }
@@ -576,17 +593,32 @@ class DiskManager: ObservableObject {
         let errorPipe = Pipe()
         task.standardError = errorPipe
         
-        defer {
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-        }
+        // 使用信号量 + 超时，防止无限等待
+        let semaphore = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in semaphore.signal() }
         
         do {
             try task.run()
-            task.waitUntilExit()
+            
+            let result = semaphore.wait(timeout: .now() + 10)
+            
+            if result == .timedOut {
+                task.terminate()
+                Thread.sleep(forTimeInterval: 0.5)
+                if task.isRunning {
+                    task.interrupt()
+                }
+                pipe.fileHandleForReading.closeFile()
+                errorPipe.fileHandleForReading.closeFile()
+                logger.warning("卸载命令超时 (10秒)，uuid=\(uuid.prefix(8))...")
+                return (false, "卸载超时，磁盘可能被占用")
+            }
             
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
+            
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
             
             if task.terminationStatus == 0 {
                 logger.info("卸载成功：\(uuid)")
@@ -596,6 +628,8 @@ class DiskManager: ObservableObject {
                 return (false, errorMessage.isEmpty ? "卸载失败" : errorMessage)
             }
         } catch {
+            pipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
             logger.error("执行卸载命令失败：\(error.localizedDescription)")
             return (false, "执行失败：\(error.localizedDescription)")
         }
