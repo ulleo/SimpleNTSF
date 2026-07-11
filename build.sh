@@ -10,12 +10,25 @@ echo "🔨 开始编译..."
 rm -rf "$BUILD_DIR"/*
 mkdir -p "$BUILD_DIR" "$APP_DIR"
 
+# 收集所有 Swift 源文件
+SWIFT_FILES=(
+    "$SOURCES_DIR/Utilities/Constants.swift"
+    "$SOURCES_DIR/Models/DiskInfo.swift"
+    "$SOURCES_DIR/Models/PhysicalDisk.swift"
+    "$SOURCES_DIR/Services/DiskManager.swift"
+    "$SOURCES_DIR/Views/DiskRow.swift"
+    "$SOURCES_DIR/Views/DiskListItem.swift"
+    "$SOURCES_DIR/Views/AddDiskSheet.swift"
+    "$SOURCES_DIR/Views/EditMountPointSheet.swift"
+    "$SOURCES_DIR/Views/ContentView.swift"
+    "$SOURCES_DIR/SimpleNTFSApp.swift"
+)
+
 swiftc \
     -sdk $(xcrun --show-sdk-path) \
     -target arm64-apple-macos12.0 \
     -O \
-    "$SOURCES_DIR/ContentView.swift" \
-    "$SOURCES_DIR/SimpleNTFSApp.swift" \
+    "${SWIFT_FILES[@]}" \
     -o "$BUILD_DIR/SimpleNTFS"
 
 cp "$BUILD_DIR/SimpleNTFS" "$APP_DIR/"
