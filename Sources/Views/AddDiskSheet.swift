@@ -23,13 +23,13 @@ struct AddDiskSheet: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            Text("➕ 新增 NTFS 硬盘").font(.title2.bold())
+            Text("➕ 新增硬盘").font(.title2.bold())
             
             if isLoading {
                 ProgressView("正在扫描硬盘...").padding()
             } else if physicalDisks.isEmpty {
                 VStack(spacing: 10) {
-                    Text("⚠️ 未检测到 NTFS 硬盘").foregroundColor(.orange)
+                    Text("⚠️ 未检测到外置硬盘").foregroundColor(.orange)
                     Text("请确保硬盘已连接，或点击「手动输入 UUID」").font(.caption).foregroundColor(.secondary)
                     Button("手动输入 UUID", action: { showManualEntry = true }).buttonStyle(.bordered)
                 }.padding()
@@ -173,10 +173,10 @@ struct AddDiskSheet: View {
                                 }
                             }
                             
-                            if !volumeUUID.isEmpty && fileSystemType == "NTFS" {
+                            if !volumeUUID.isEmpty && !fileSystemType.isEmpty {
                                 let isAdded = addedUUIDs.contains(volumeUUID)
                                 let currentMount = getCurrentMount(for: device)
-                                disks.append(PhysicalDisk(device: device, uuid: volumeUUID, volumeName: volumeName, size: currentSize ?? size, isAdded: isAdded, currentMount: currentMount))
+                                disks.append(PhysicalDisk(device: device, uuid: volumeUUID, volumeName: volumeName, size: currentSize ?? size, isAdded: isAdded, currentMount: currentMount, fileSystemType: fileSystemType))
                             }
                         }
                     }

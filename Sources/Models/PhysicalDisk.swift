@@ -10,8 +10,9 @@ struct PhysicalDisk: Identifiable, Codable {
     let size: String
     var isAdded: Bool
     var currentMount: String?
+    var fileSystemType: String?
     
-    init(id: UUID = UUID(), device: String, uuid: String, volumeName: String, size: String, isAdded: Bool = false, currentMount: String? = nil) {
+    init(id: UUID = UUID(), device: String, uuid: String, volumeName: String, size: String, isAdded: Bool = false, currentMount: String? = nil, fileSystemType: String? = nil) {
         self.id = id
         self.device = device
         self.uuid = uuid
@@ -19,5 +20,6 @@ struct PhysicalDisk: Identifiable, Codable {
         self.size = size
         self.isAdded = isAdded
         self.currentMount = currentMount
+        self.fileSystemType = fileSystemType
     }
 }

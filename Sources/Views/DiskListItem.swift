@@ -13,6 +13,14 @@ struct DiskListItem: View {
                 HStack(spacing: 6) {
                     Text(disk.device + " - " + disk.volumeName)
                         .font(.system(.body, design: .monospaced))
+                    if let fsType = disk.fileSystemType {
+                        Text(fsType)
+                            .font(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.1))
+                            .cornerRadius(4)
+                    }
                     if disk.isAdded { Text("✅ 已添加").font(.caption).foregroundColor(.green) }
                 }
                 Text("UUID: " + disk.uuid)

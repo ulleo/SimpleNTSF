@@ -181,7 +181,7 @@ class DiskManager: ObservableObject {
     func refreshAllDiskInfoWithCompletion(disks: [DiskInfo]) {
         let dispatchGroup = DispatchGroup()
         let infoLock = NSLock()
-        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?, isTimeout: Bool)] = [:]
+        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?, isTimeout: Bool, fileSystemType: String?)] = [:]
         
         logger.info("开始刷新 \(disks.count) 个硬盘的设备信息")
         
@@ -195,6 +195,7 @@ class DiskManager: ObservableObject {
                 let volumeName = self.runDiskUtilCommand(withTimeout: 3.0, uuid: disk.uuid, searchPattern: "Volume Name:") {
                     isTimeout = true
                 } ?? "未知"
+                let fileSystemType = self.getFileSystemType(uuid: disk.uuid)
                 let actualMount = self.getActualMountPoint(device: device)
                 let isMounted = actualMount != nil
                 
@@ -204,7 +205,7 @@ class DiskManager: ObservableObject {
                 }
                 
                 infoLock.lock()
-                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage, isTimeout)
+                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage, isTimeout, fileSystemType)
                 infoLock.unlock()
                 dispatchGroup.leave()
             }
@@ -221,7 +222,8 @@ class DiskManager: ObservableObject {
                         currentMount: info.currentMount,
                         isMounted: info.isMounted,
                         usage: info.usage,
-                        isTimeout: info.isTimeout
+                        isTimeout: info.isTimeout,
+                        fileSystemType: info.fileSystemType
                     )
                 }
                 return oldDisk
@@ -237,6 +239,10 @@ class DiskManager: ObservableObject {
     
     func getVolumeName(byUUID uuid: String) -> String {
         return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Volume Name:") ?? "未知"
+    }
+    
+    func getFileSystemType(uuid: String) -> String? {
+        return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "File System Personality:")
     }
     
     func runDiskUtilCommand(withTimeout timeout: TimeInterval, uuid: String, searchPattern: String, onTimeout: (() -> Void)? = nil) -> String? {
@@ -514,16 +520,32 @@ class DiskManager: ObservableObject {
             return (false, "无法创建挂载点目录：\(error.localizedDescription)")
         }
         
+        // 获取文件系统类型
+        let fileSystemType = getFileSystemType(uuid: uuid)
+        logger.info("磁盘文件系统类型：\(fileSystemType ?? "未知")")
+        
+        // 根据文件系统类型选择挂载方式
+        let mountCommand: String
+        let mountArgs: [String]
+        let fsLower = (fileSystemType ?? "").lowercased()
+        
+        if fsLower.contains("ntfs") {
+            // NTFS 使用 macFUSE 的 mount_ntfs
+            mountCommand = Constants.mountNTFSPath
+            mountArgs = ["/dev/" + device, resolvedMountPoint]
+        } else {
+            // 其他文件系统（exFAT, FAT32, APFS, HFS+）使用系统原生挂载
+            mountCommand = "/sbin/mount"
+            let fsFlag = fsLower.contains("exfat") ? ["-t", "exfat"] : 
+                         fsLower.contains("fat") ? ["-t", "msdos"] : []
+            mountArgs = fsFlag + ["/dev/" + device, resolvedMountPoint]
+        }
+        
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        task.arguments = [
-            "-n",
-            Constants.mountNTFSPath,
-            "/dev/" + device,
-            resolvedMountPoint
-        ]
+        task.arguments = ["-n"] + [mountCommand] + mountArgs
         
-        logger.info("执行挂载命令：sudo -n \(Constants.mountNTFSPath) /dev/\(device) \(resolvedMountPoint)")
+        logger.info("执行挂载命令：sudo -n \(mountCommand) \(mountArgs.joined(separator: " "))")
         
         let pipe = Pipe()
         task.standardOutput = pipe

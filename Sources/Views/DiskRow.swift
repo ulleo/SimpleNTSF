@@ -61,6 +61,10 @@ struct DiskRow: View {
                 }
                 Text("目标：" + disk.mountPoint)
                     .font(.caption).foregroundColor(.secondary)
+                if let fsType = disk.fileSystemType {
+                    Text("类型：" + fsType)
+                        .font(.caption).foregroundColor(.purple)
+                }
                 if let usage = disk.usage {
                     Text("用量：" + usage)
                         .font(.caption).foregroundColor(.blue)

@@ -379,10 +379,20 @@ struct ContentView: View {
     
     func checkPasswordFreeStatus() {
         let fm = FileManager.default
-        let sudoersExists = fm.fileExists(atPath: Constants.sudoersFilePath)
+        let sudoersPath = Constants.sudoersFilePath
+        
+        guard fm.fileExists(atPath: sudoersPath),
+              let content = try? String(contentsOfFile: sudoersPath, encoding: .utf8) else {
+            DispatchQueue.main.async { self.isPasswordFree = false }
+            return
+        }
+        
+        let hasMountNTFS = content.contains(Constants.mountNTFSPath)
+        let hasMount = content.contains("/sbin/mount")
+        let hasDiskUtil = content.contains(Constants.diskUtilPath)
         
         DispatchQueue.main.async {
-            self.isPasswordFree = sudoersExists
+            self.isPasswordFree = hasMountNTFS && hasMount && hasDiskUtil
         }
     }
     
@@ -409,7 +419,7 @@ struct ContentView: View {
         let tempUUID = UUID().uuidString
         let tempFile = "/tmp/simplentfs_sudoers_\(tempUUID)"
         
-        let sudoersEntry = "\(safeName) ALL=(ALL) NOPASSWD: NOEXEC: \(Constants.mountNTFSPath), \(Constants.diskUtilPath)"
+        let sudoersEntry = "\(safeName) ALL=(ALL) NOPASSWD: NOEXEC: \(Constants.mountNTFSPath), /sbin/mount, \(Constants.diskUtilPath)"
         let script = "echo '\(sudoersEntry)' > '\(tempFile)' && chown root:wheel '\(tempFile)' && chmod 440 '\(tempFile)' && mv '\(tempFile)' '\(Constants.sudoersFilePath)'"
         
         let task = Process()

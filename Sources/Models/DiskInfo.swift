@@ -11,10 +11,11 @@ struct DiskInfo: Identifiable, Codable, Equatable {
     var isMounted: Bool
     var usage: String?
     var isTimeout: Bool = false
+    var fileSystemType: String?
     
     var id: String { uuid }
     
-    init(uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil, isTimeout: Bool = false) {
+    init(uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil, isTimeout: Bool = false, fileSystemType: String? = nil) {
         self.uuid = uuid
         self.volumeName = volumeName
         self.mountPoint = mountPoint
@@ -23,5 +24,6 @@ struct DiskInfo: Identifiable, Codable, Equatable {
         self.isMounted = isMounted
         self.usage = usage
         self.isTimeout = isTimeout
+        self.fileSystemType = fileSystemType
     }
 }
