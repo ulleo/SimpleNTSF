@@ -141,7 +141,7 @@ struct AddDiskSheet: View {
                         }
                     }
                     
-                    if currentDisk != nil, line.contains("Microsoft Basic Data") {
+                    if currentDisk != nil, (line.contains("Microsoft Basic Data") || line.contains("Apple_HFS")) {
                         let parts = line.components(separatedBy: " ").filter { !$0.isEmpty }
                         if parts.count >= 5 {
                             let device = parts.last ?? ""

@@ -537,7 +537,8 @@ class DiskManager: ObservableObject {
             // 其他文件系统（exFAT, FAT32, APFS, HFS+）使用系统原生挂载
             mountCommand = "/sbin/mount"
             let fsFlag = fsLower.contains("exfat") ? ["-t", "exfat"] : 
-                         fsLower.contains("fat") ? ["-t", "msdos"] : []
+                         fsLower.contains("fat") ? ["-t", "msdos"] :
+                         fsLower.contains("hfs") ? ["-t", "hfs"] : []
             mountArgs = fsFlag + ["/dev/" + device, resolvedMountPoint]
         }
         
