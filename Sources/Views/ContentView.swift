@@ -26,7 +26,7 @@ struct ContentView: View {
     @State private var showingAlert = false
     @State private var permissionStatus: PermissionConfiguration.Status = .missing
     private var isPasswordFree: Bool { permissionStatus == .configured }
-    @State private var isBatchOperating = false
+    private var isBatchOperating: Bool { manager.isBatchOperating }
     
     private var hasLoading: Bool {
         !manager.operatingUUIDs.isEmpty
@@ -325,15 +325,12 @@ struct ContentView: View {
         }
     }
 
-    // Serial batch results will be centralized and summarized in the batch-operation ticket.
     private func runBatch(operation: VolumeOperation) {
-        isBatchOperating = true
-        let targets = manager.disks.filter { operation == .mount ? $0.canMount : $0.canUnmount }
-        func next(_ index: Int) {
-            guard index < targets.count else { isBatchOperating = false; return }
-            manager.performOperation(uuid: targets[index].uuid, operation: operation) { _ in next(index + 1) }
+        manager.performBatch(operation: operation) { result in
+            alertMessage = result.message
+            alertIsError = result.hasFailures
+            showingAlert = true
         }
-        next(0)
     }
 
     func checkPasswordFreeStatus() {
