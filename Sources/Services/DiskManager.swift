@@ -13,6 +13,10 @@ class DiskManager: ObservableObject {
     private var refreshCompletions: [() -> Void] = []
     // Main-thread revision: a successful configuration write invalidates in-flight queries.
     private var configurationRevision = 0
+    private var refreshDeferred = false
+    @Published private(set) var operatingUUIDs: Set<String> = []
+    @Published private(set) var operationResults: [String: VolumeOperationResult] = [:]
+    private let executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))?
     @Published private(set) var isLoading = false
     @Published private(set) var refreshError: String?
     private let configURL: URL?
@@ -60,9 +64,11 @@ class DiskManager: ObservableObject {
     }()
     
     init(configURL: URL? = nil, queryDisk: ((DiskInfo) throws -> DiskInfo)? = nil,
+         executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))? = nil,
          executeCommand: CommandExecuting? = nil) {
         self.configURL = configURL
         self.queryDisk = queryDisk
+        self.executeOperation = executeOperation
         self.executeCommand = executeCommand ?? { CommandRunner().run(executable: $0, arguments: $1, timeout: $2) }
     }
     
@@ -108,6 +114,11 @@ class DiskManager: ObservableObject {
 
     /// All visible state and revision decisions belong to the main thread.
     private func beginRefresh() {
+        guard operatingUUIDs.isEmpty else {
+            refreshDeferred = true
+            return
+        }
+        refreshDeferred = false
         let revision = configurationRevision
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
@@ -318,17 +329,68 @@ class DiskManager: ObservableObject {
         throw VolumeQueryFailure.failed("无法解析卷用量，请刷新重试")
     }
 
-    private func isVolumeStateConfirmed(uuid: String) -> Bool {
-        if !Thread.isMainThread {
-            return DispatchQueue.main.sync { self.isVolumeStateConfirmed(uuid: uuid) }
+    /// The operation remains busy until its actual volume state has been queried and published.
+    func performOperation(uuid: String, operation: VolumeOperation,
+                          completion: @escaping (VolumeOperationResult) -> Void = { _ in }) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.performOperation(uuid: uuid, operation: operation, completion: completion) }
+            return
         }
-        return disks.first(where: { $0.uuid == uuid })?.isStateConfirmed == true
+        let disk = disks.first { $0.uuid == uuid }
+        let rejection: String?
+        if operatingUUIDs.contains(uuid) { rejection = "该卷正在操作中，请稍后重试" }
+        else if disk?.isStateConfirmed != true { rejection = "卷状态未确认，请刷新后重试" }
+        else if operation == .mount && disk?.canMount != true { rejection = "卷已挂载，请使用重新挂载" }
+        else if operation != .mount && disk?.canUnmount != true { rejection = "卷未挂载" }
+        else { rejection = nil }
+        if let rejection = rejection {
+            completion(VolumeOperationResult(operation: operation, commandSucceeded: false,
+                commandMessage: rejection, queryState: disk?.queryState ?? .unconfirmed(reason: "未找到卷配置")))
+            return
+        }
+        guard let disk = disk else { return }
+        operatingUUIDs.insert(uuid)
+        operationResults.removeValue(forKey: uuid)
+        configurationRevision += 1
+        DispatchQueue.global().async {
+            let outcome: (success: Bool, message: String)
+            if operation == .remount {
+                let unmounted = self.executeStep(.unmount, disk: disk)
+                if unmounted.success {
+                    let mounted = self.executeStep(.mount, disk: disk)
+                    outcome = mounted.success ? (true, "重新挂载成功") : (false, "挂载失败：" + mounted.message)
+                } else { outcome = (false, "卸载失败：" + unmounted.message) }
+            } else {
+                outcome = self.executeStep(operation, disk: disk)
+            }
+            self.queryDiskInfo(disks: [disk]) { queried in
+                let verified = queried[0]
+                if let index = self.disks.firstIndex(where: { $0.uuid == uuid }) {
+                    var updated = verified
+                    updated.mountPoint = self.disks[index].mountPoint
+                    self.disks[index] = updated
+                }
+                let result = VolumeOperationResult(operation: operation, commandSucceeded: outcome.success,
+                    commandMessage: outcome.message, queryState: verified.queryState)
+                self.operationResults[uuid] = result
+                self.configurationRevision += 1
+                self.operatingUUIDs.remove(uuid)
+                completion(result)
+                if self.operatingUUIDs.isEmpty && self.refreshDeferred { self.beginRefresh() }
+            }
+        }
     }
 
-    func mountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
-        guard isVolumeStateConfirmed(uuid: uuid) else {
-            return (false, "卷状态未确认，请刷新后重试")
+    private func executeStep(_ operation: VolumeOperation, disk: DiskInfo) -> (success: Bool, message: String) {
+        if let executeOperation = executeOperation { return executeOperation(operation, disk) }
+        switch operation {
+        case .mount: return executeMount(uuid: disk.uuid, mountPoint: disk.mountPoint)
+        case .unmount: return executeUnmount(uuid: disk.uuid, mountPoint: disk.currentMount)
+        case .remount: preconditionFailure("Remount is coordinated as unmount followed by mount")
         }
+    }
+
+    private func executeMount(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
         let resolvedMountPoint: String
         do { resolvedMountPoint = try MountPoint.normalize(mountPoint) }
         catch { return (false, error.localizedDescription) }
@@ -427,10 +489,7 @@ class DiskManager: ObservableObject {
         }
     }
     
-    func unmountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
-        guard isVolumeStateConfirmed(uuid: uuid) else {
-            return (false, "卷状态未确认，请刷新后重试")
-        }
+    private func executeUnmount(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
         let device = findDevice(byUUID: uuid)
         guard device != "未找到" else { return (false, "未找到设备") }
         
