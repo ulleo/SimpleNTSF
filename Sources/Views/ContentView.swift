@@ -8,17 +8,11 @@ struct ContentView: View {
     @State private var showingAddDialog = false
     @State private var newUUID = ""
     @State private var newMountPoint = ""
-    @State private var alertMessage: String?
-    @State private var alertIsError = false
+    @State private var notice: OperationNotice?
     @State private var editingDisk: DiskInfo?
     @State private var showingDeleteConfirm = false
     @State private var deletingDisk: DiskInfo?
-    @State private var showingUnmountConfirm = false
-    @State private var unmountingDisk: DiskInfo?
-    @State private var showingRemountConfirm = false
-    @State private var remountingDisk: DiskInfo?
     @StateObject private var permissionSetup = PermissionSetup()
-    @State private var showingAlert = false
     private var permissionStatus: PermissionConfiguration.Status { permissionSetup.status }
     private var isPasswordFree: Bool { permissionStatus == .configured && manager.authorizationFailures.isEmpty }
     private var permissionMessage: String {
@@ -116,6 +110,12 @@ struct ContentView: View {
             .padding(.top).padding(.bottom, 10)
             
             Divider()
+
+            if let notice = notice {
+                OperationNoticeView(notice: notice, onDismiss: { self.notice = nil })
+                    .padding(.horizontal)
+                    .padding(.top, 10)
+            }
             
             if let error = manager.refreshError {
                 Text(error)
@@ -140,13 +140,11 @@ struct ContentView: View {
                             },
                             onUnmount: {
                                 guard !isBatchOperating else { return }
-                                unmountingDisk = disk
-                                showingUnmountConfirm = true
+                                operate(uuid: disk.uuid, operation: .unmount)
                             },
                             onRemount: {
                                 guard !isBatchOperating else { return }
-                                remountingDisk = disk
-                                showingRemountConfirm = true
+                                operate(uuid: disk.uuid, operation: .remount)
                             },
                             onEdit: {
                                 guard !isBatchOperating && !manager.operatingUUIDs.contains(disk.uuid) else { return }
@@ -248,12 +246,13 @@ struct ContentView: View {
             }
             .padding()
         }
-        .alert("提示", isPresented: $showingAlert) {
-            Button("确定", role: .cancel) {
-                alertMessage = nil
-                showingAlert = false
-            }
-        } message: { Text(alertMessage ?? "") }
+        .task(id: notice?.id) {
+            guard let current = notice else { return }
+            do {
+                try await Task.sleep(nanoseconds: current.isError ? 10_000_000_000 : 4_000_000_000)
+                if notice?.id == current.id { notice = nil }
+            } catch { /* A newer notification or closing the view cancels dismissal. */ }
+        }
         .sheet(isPresented: $showingAddDialog) {
             AddDiskSheet(uuid: $newUUID, mountPoint: $newMountPoint, onSave: {
                 let result = manager.addDisk(uuid: newUUID, mountPoint: newMountPoint)
@@ -284,32 +283,12 @@ struct ContentView: View {
                 if let disk = deletingDisk {
                     let success = manager.deleteDisk(uuid: disk.uuid)
                     if !success {
-                        alertMessage = "删除挂载配置失败，请刷新后重试"
-                        alertIsError = true
-                        showingAlert = true
+                        notice = OperationNotice(message: "删除挂载配置失败，请刷新后重试", isError: true)
                     }
                     deletingDisk = nil
                 }
             }
         } message: { Text("确定要从配置列表中删除此硬盘吗？") }
-        .alert("确认卸载", isPresented: $showingUnmountConfirm) {
-            Button("取消", role: .cancel) { unmountingDisk = nil }
-            Button("卸载", role: .destructive) {
-                if let disk = unmountingDisk {
-                    operate(uuid: disk.uuid, operation: .unmount)
-                    unmountingDisk = nil
-                }
-            }
-        } message: { Text("确定要卸载此硬盘吗？") }
-        .alert("确认重新挂载", isPresented: $showingRemountConfirm) {
-            Button("取消", role: .cancel) { remountingDisk = nil }
-            Button("重新挂载", role: .destructive) {
-                if let disk = remountingDisk {
-                    operate(uuid: disk.uuid, operation: .remount)
-                    remountingDisk = nil
-                }
-            }
-        } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
         .onAppear {
             checkPasswordFreeStatus()
             self.refreshWithCompletion()
@@ -317,20 +296,16 @@ struct ContentView: View {
     }
     
     private func operate(uuid: String, operation: VolumeOperation) {
+        let disk = manager.disks.first { $0.uuid == uuid }
+        let name = disk.flatMap { $0.volumeName.isEmpty ? nil : $0.volumeName } ?? uuid
         manager.performOperation(uuid: uuid, operation: operation) { result in
-            if !result.success {
-                alertMessage = result.message
-                alertIsError = true
-                showingAlert = true
-            }
+            notice = OperationNotice(message: name + "：" + result.message, isError: !result.success)
         }
     }
 
     private func runBatch(operation: VolumeOperation) {
         manager.performBatch(operation: operation) { result in
-            alertMessage = result.message
-            alertIsError = result.hasFailures
-            showingAlert = true
+            notice = OperationNotice(message: result.message, isError: result.hasFailures)
         }
     }
 
