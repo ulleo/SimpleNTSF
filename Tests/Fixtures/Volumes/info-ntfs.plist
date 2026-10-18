@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>DeviceIdentifier</key>
+	<string>disk99s1</string>
+	<key>VolumeUUID</key>
+	<string>abcdef12-1234-1234-1234-123456789abc</string>
+	<key>VolumeName</key>
+	<string>Archive: Work Files</string>
+	<key>FilesystemType</key>
+	<string>ntfs</string>
+	<key>MountPoint</key>
+	<string>/Volumes/Archive: Work Files</string>
+	<key>TotalSize</key>
+	<integer>2000000000</integer>
+	<key>Internal</key>
+	<false/>
+	<key>ParentWholeDisk</key>
+	<string>disk99</string>
+</dict>
+</plist>

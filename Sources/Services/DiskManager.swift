@@ -85,7 +85,7 @@ class DiskManager: ObservableObject {
     
     func isValidUUID(_ uuid: String) -> Bool {
         let pattern = "^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$"
-        return uuid.range(of: pattern, options: .regularExpression) != nil
+        return uuid.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
     
     func validateMountPoint(_ path: String) -> (valid: Bool, message: String) {
@@ -100,7 +100,7 @@ class DiskManager: ObservableObject {
     /// 验证设备名格式，防止路径遍历攻击
     func isValidDeviceName(_ device: String) -> Bool {
         // 设备名只能包含字母、数字和斜杠，且必须以 disk 开头
-        let pattern = "^disk[0-9]+(s[0-9]+)?$"
+        let pattern = "^disk[0-9]+(s[0-9]+)*$"
         return device.range(of: pattern, options: .regularExpression) != nil
     }
     
@@ -155,7 +155,7 @@ class DiskManager: ObservableObject {
             for line in lines {
                 let parts = line.split(separator: ":", maxSplits: 1)
                 if parts.count == 2 {
-                    let uuid = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                    let uuid = String(parts[0]).trimmingCharacters(in: .whitespaces).uppercased()
                     let mountPoint = String(parts[1]).trimmingCharacters(in: .whitespaces)
                     
                     guard self.isValidUUID(uuid) else {
@@ -259,83 +259,16 @@ class DiskManager: ObservableObject {
     }
 
     private func queryCurrentDisk(_ disk: DiskInfo) throws -> DiskInfo {
-        let device = try diskUtilField(uuid: disk.uuid, name: "Device Identifier:")
-        let name = try diskUtilField(uuid: disk.uuid, name: "Volume Name:")
-        let type = try diskUtilField(uuid: disk.uuid, name: "File System Personality:")
-        guard let device = device, isValidDeviceName(device), let name = name, let type = type else {
-            throw VolumeQueryFailure.failed("无法读取卷信息，请刷新重试")
-        }
-        let mount = try currentMount(device: device)
-        var result = disk
-        result.device = device
-        result.volumeName = name
-        result.fileSystemType = type
-        result.isMounted = mount != nil
-        result.currentMount = mount ?? ""
-        result.usage = try mount.map { try diskUsage(mountPoint: $0) }
-        return result
+        try VolumeQuery(execute: executeCommand).refresh(disk)
     }
 
-    private func commandOutput(executable: String, arguments: [String], timeout: TimeInterval) throws -> String {
-        let result = executeCommand(executable, arguments, timeout)
-        guard result.success else {
-            if result.outcome == .timedOut { throw VolumeQueryFailure.timedOut }
-            throw VolumeQueryFailure.failed(result.message)
-        }
-        guard let output = String(data: result.stdout, encoding: .utf8) else {
-            throw VolumeQueryFailure.failed("无法解析命令输出，请刷新重试")
-        }
-        return output
-    }
-
-    private func diskUtilField(uuid: String, name: String) throws -> String? {
-        let output = try commandOutput(executable: Constants.diskUtilPath, arguments: ["info", uuid], timeout: 3)
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix(name) {
-                return String(trimmed.dropFirst(name.count)).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
-    }
-
-    // Existing operation command selection keeps its behavior until the operation migration.
+    // Operation preflight still resolves current metadata by volume UUID.
     func findDevice(byUUID uuid: String) -> String {
-        return (try? diskUtilField(uuid: uuid, name: "Device Identifier:")) ?? "未找到"
+        (try? VolumeQuery(execute: executeCommand).details(identifier: uuid).device) ?? "未找到"
     }
 
     func getFileSystemType(uuid: String) -> String? {
-        return try? diskUtilField(uuid: uuid, name: "File System Personality:")
-    }
-
-    private func currentMount(device: String) throws -> String? {
-        let output = try commandOutput(executable: "/sbin/mount", arguments: [], timeout: 2)
-        guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw VolumeQueryFailure.failed("无法解析挂载状态，请刷新重试")
-        }
-        for line in output.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
-            guard line.contains(" on "), line.contains(" (") else {
-                throw VolumeQueryFailure.failed("无法解析挂载状态，请刷新重试")
-            }
-            if line.hasPrefix("/dev/\(device) on ") {
-                let pathAndAttributes = line.dropFirst("/dev/\(device) on ".count)
-                guard let attributes = pathAndAttributes.range(of: " (", options: .backwards) else {
-                    throw VolumeQueryFailure.failed("无法解析挂载点，请刷新重试")
-                }
-                return String(pathAndAttributes[..<attributes.lowerBound])
-            }
-        }
-        return nil
-    }
-
-    private func diskUsage(mountPoint: String) throws -> String {
-        let output = try commandOutput(executable: "/bin/df", arguments: ["-h", mountPoint], timeout: 2)
-        let lines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
-        if lines.count >= 2 {
-            let parts = lines[1].split(whereSeparator: { $0.isWhitespace })
-            if parts.count >= 5 { return "\(parts[2]) / \(parts[1]) (\(parts[4]))" }
-        }
-        throw VolumeQueryFailure.failed("无法解析卷用量，请刷新重试")
+        try? VolumeQuery(execute: executeCommand).details(identifier: uuid).fileSystemType
     }
     /// Freeze membership, then recheck the current configuration and state before each step.
     func performBatch(operation: VolumeOperation, completion: @escaping (BatchOperationResult) -> Void = { _ in }) {
@@ -553,6 +486,7 @@ class DiskManager: ObservableObject {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.addDisk(uuid: uuid, mountPoint: mountPoint) }
         }
+        let uuid = uuid.uppercased()
         guard isValidUUID(uuid) else {
             return (false, "无效的 UUID 格式，请使用类似 E0719CA3-71B2-12E0-A9E0-12B4EA12B4C2 的格式")
         }
@@ -569,7 +503,7 @@ class DiskManager: ObservableObject {
             return (false, "读取配置文件失败")
         }
         guard !content.components(separatedBy: "\n").contains(where: {
-            $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):")
+            $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("\(uuid.uppercased()):")
         }) else { return (false, "该卷已存在挂载配置") }
         if !content.isEmpty && !content.hasSuffix("\n") { content += "\n" }
         content += "\(uuid):\(resolvedMountPoint)\n"
@@ -605,7 +539,7 @@ class DiskManager: ObservableObject {
             return (false, "读取配置文件失败")
         }
         var lines = content.components(separatedBy: "\n")
-        guard let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):") }) else {
+        guard let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("\(uuid.uppercased()):") }) else {
             return (false, "未找到挂载配置，请刷新后重试")
         }
         lines[index] = "\(uuid):\(resolvedMountPoint)"
@@ -638,7 +572,7 @@ class DiskManager: ObservableObject {
         var lines = content.components(separatedBy: "\n")
         
         for i in 0..<lines.count {
-            if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):") {
+            if lines[i].trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("\(uuid.uppercased()):") {
                 lines.remove(at: i)
                 break
             }
