@@ -9,6 +9,7 @@ private struct OperationExecution {
     var success: Bool
     var message: String
     var commandOutcome: CommandOutcome? = nil
+    var authorizationDenied = false
 }
 
 // MARK: - Disk Manager
@@ -25,6 +26,7 @@ class DiskManager: ObservableObject {
     @Published private(set) var batchResult: BatchOperationResult?
     @Published private(set) var operatingUUIDs: Set<String> = []
     @Published private(set) var operationResults: [String: VolumeOperationResult] = [:]
+    @Published private(set) var authorizationFailures: [String: String] = [:]
     private let executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))?
     @Published private(set) var isLoading = false
     @Published private(set) var refreshError: String?
@@ -95,13 +97,6 @@ class DiskManager: ObservableObject {
         } catch {
             return (false, error.localizedDescription)
         }
-    }
-    
-    /// 验证设备名格式，防止路径遍历攻击
-    func isValidDeviceName(_ device: String) -> Bool {
-        // 设备名只能包含字母、数字和斜杠，且必须以 disk 开头
-        let pattern = "^disk[0-9]+(s[0-9]+)*$"
-        return device.range(of: pattern, options: .regularExpression) != nil
     }
     
     // MARK: - Config Operations
@@ -262,14 +257,6 @@ class DiskManager: ObservableObject {
         try VolumeQuery(execute: executeCommand).refresh(disk)
     }
 
-    // Operation preflight still resolves current metadata by volume UUID.
-    func findDevice(byUUID uuid: String) -> String {
-        (try? VolumeQuery(execute: executeCommand).details(identifier: uuid).device) ?? "未找到"
-    }
-
-    func getFileSystemType(uuid: String) -> String? {
-        try? VolumeQuery(execute: executeCommand).details(identifier: uuid).fileSystemType
-    }
     /// Freeze membership, then recheck the current configuration and state before each step.
     func performBatch(operation: VolumeOperation, completion: @escaping (BatchOperationResult) -> Void = { _ in }) {
         guard Thread.isMainThread else {
@@ -387,7 +374,7 @@ class DiskManager: ObservableObject {
                     self.disks[index] = updated
                 }
                 let result = VolumeOperationResult(operation: operation, commandSucceeded: outcome.success,
-                    commandMessage: outcome.message, queryState: verified.queryState, commandOutcome: outcome.commandOutcome)
+                    commandMessage: outcome.message, queryState: verified.queryState, commandOutcome: outcome.commandOutcome, authorizationDenied: outcome.authorizationDenied)
                 self.operationResults[uuid] = result
                 self.configurationRevision += 1
                 self.operatingUUIDs.remove(uuid)
@@ -404,7 +391,7 @@ class DiskManager: ObservableObject {
         }
         switch operation {
         case .mount: return executeMount(uuid: disk.uuid, mountPoint: disk.mountPoint)
-        case .unmount: return executeUnmount(uuid: disk.uuid, mountPoint: disk.currentMount)
+        case .unmount: return executeUnmount(uuid: disk.uuid)
         case .remount: preconditionFailure("Remount is coordinated as unmount followed by mount")
         }
     }
@@ -415,14 +402,14 @@ class DiskManager: ObservableObject {
         catch { return OperationExecution(success: false, message: error.localizedDescription) }
 
         
-        let device = findDevice(byUUID: uuid)
-        guard device != "未找到" else { return OperationExecution(success: false, message: "未找到设备") }
-        
-        // 验证设备名格式
-        guard isValidDeviceName(device) else {
-            return OperationExecution(success: false, message: "无效的设备名格式")
+        let detail: VolumeDetails
+        do { detail = try VolumeQuery(execute: executeCommand).details(identifier: uuid) }
+        catch let failure as VolumeQueryFailure { return OperationExecution(success: false, message: failure.message) }
+        catch { return OperationExecution(success: false, message: error.localizedDescription) }
+        guard let fileSystem = VolumeFileSystem(name: detail.fileSystemType) else {
+            return OperationExecution(success: false, message: "不支持的文件系统：" + detail.fileSystemType)
         }
-        
+
         let fm = FileManager.default
         do {
             if !fm.fileExists(atPath: resolvedMountPoint) {
@@ -433,53 +420,35 @@ class DiskManager: ObservableObject {
             return OperationExecution(success: false, message: "无法创建挂载点目录：\(error.localizedDescription)")
         }
         
-        // 获取文件系统类型
-        let fileSystemType = getFileSystemType(uuid: uuid)
-        logger.info("磁盘文件系统类型：\(fileSystemType ?? "未知")")
-        
-        // 根据文件系统类型选择挂载方式
-        let mountCommand: String
-        let mountArgs: [String]
-        let fsLower = (fileSystemType ?? "").lowercased()
-        
-        if fsLower.contains("ntfs") {
-            // NTFS 使用 macFUSE 的 mount_ntfs
-            mountCommand = Constants.mountNTFSPath
-            mountArgs = ["/dev/" + device, resolvedMountPoint]
-        } else {
-            // 其他文件系统（exFAT, FAT32, APFS, HFS+）使用系统原生挂载
-            mountCommand = "/sbin/mount"
-            let fsFlag = fsLower.contains("exfat") ? ["-t", "exfat"] : 
-                         fsLower.contains("fat") ? ["-t", "msdos"] :
-                         fsLower.contains("hfs") ? ["-t", "hfs"] : []
-            mountArgs = fsFlag + ["/dev/" + device, resolvedMountPoint]
-        }
-        
-        let result = executeCommand("/usr/bin/sudo", ["-n", mountCommand] + mountArgs, 15)
-        return operationExecution(result, successMessage: "挂载成功！")
+        let mountCommand = fileSystem.mountExecutable
+        let arguments = ["-n", mountCommand] + fileSystem.mountArguments(device: detail.device, target: resolvedMountPoint)
+        let result = executeCommand("/usr/bin/sudo", arguments, 15)
+        return operationExecution(result, command: mountCommand, successMessage: "挂载成功！")
     }
 
-    private func executeUnmount(uuid: String, mountPoint: String) -> OperationExecution {
-        let device = findDevice(byUUID: uuid)
-        guard device != "未找到" else { return OperationExecution(success: false, message: "未找到设备") }
-        
-        // 验证设备名格式
-        guard isValidDeviceName(device) else {
-            return OperationExecution(success: false, message: "无效的设备名格式")
-        }
-        
-        let args = ["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/" + device]
+    private func executeUnmount(uuid: String) -> OperationExecution {
+        let detail: VolumeDetails
+        do { detail = try VolumeQuery(execute: executeCommand).details(identifier: uuid) }
+        catch let failure as VolumeQueryFailure { return OperationExecution(success: false, message: failure.message) }
+        catch { return OperationExecution(success: false, message: error.localizedDescription) }
+        let args = ["-n", Constants.diskUtilPath, "unmount", "/dev/" + detail.device]
         let result = executeCommand("/usr/bin/sudo", args, 10)
-        return operationExecution(result, successMessage: "卸载成功！")
+        return operationExecution(result, command: Constants.diskUtilPath, successMessage: "卸载成功！")
     }
 
-    private func operationExecution(_ result: CommandResult, successMessage: String) -> OperationExecution {
+    private func operationExecution(_ result: CommandResult, command: String, successMessage: String) -> OperationExecution {
         var message = result.success ? successMessage : result.message
         let diagnostic = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if !result.success && !diagnostic.isEmpty && !message.contains(diagnostic) {
             message += "；" + diagnostic
         }
-        return OperationExecution(success: result.success, message: message, commandOutcome: result.outcome)
+        let denied = PermissionConfiguration.isAuthorizationDenied(result)
+        let diagnosticMessage = message
+        DispatchQueue.main.async {
+            if denied { self.authorizationFailures[command] = diagnosticMessage }
+            else if result.success { self.authorizationFailures.removeValue(forKey: command) }
+        }
+        return OperationExecution(success: result.success, message: message, commandOutcome: result.outcome, authorizationDenied: denied)
     }
 
     func addDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {

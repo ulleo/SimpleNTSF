@@ -1,6 +1,6 @@
 import Foundation
 
-/// Names supported by discovery; mount command policy is kept separate.
+/// Shared supported filesystem names, mount commands and required authorization paths.
 enum VolumeFileSystem: String, CaseIterable {
     case ntfs, exfat, fat32, apfs, hfsPlus
 
@@ -14,6 +14,28 @@ enum VolumeFileSystem: String, CaseIterable {
         default: return nil
         }
     }
+    var mountExecutable: String { self == .ntfs ? Constants.mountNTFSPath : "/sbin/mount" }
+
+    func mountArguments(device: String, target: String) -> [String] {
+        let type: String?
+        switch self {
+        case .ntfs: type = nil
+        case .exfat: type = "exfat"
+        case .fat32: type = "msdos"
+        case .apfs: type = "apfs"
+        case .hfsPlus: type = "hfs"
+        }
+        return (type.map { ["-t", $0] } ?? []) + ["/dev/" + device, target]
+    }
+
+    static var requiredPermissionCommands: [String] {
+        var commands: [String] = []
+        for fileSystem in allCases where !commands.contains(fileSystem.mountExecutable) {
+            commands.append(fileSystem.mountExecutable)
+        }
+        return commands + [Constants.diskUtilPath]
+    }
+
     var displayName: String {
         switch self {
         case .ntfs: return "NTFS"
@@ -99,9 +121,6 @@ struct VolumeQuery {
                         throw VolumeQueryFailure.unknownLocation
                     }
                     guard external else { continue }
-                    if raw["APFSSnapshot"] as? Bool == true {
-                        throw VolumeQueryFailure.failed("APFS 快照不能作为普通卷添加")
-                    }
                     let detail = try volume(from: raw)
                     guard seenUUIDs.insert(detail.uuid).inserted else { continue }
                     result.volumes.append(DiscoveredVolume(device: detail.device, uuid: detail.uuid,
@@ -215,6 +234,12 @@ struct VolumeQuery {
     }
 
     private func volume(from raw: [String: Any]) throws -> VolumeDetails {
+        guard raw["APFSSnapshot"] as? Bool != true else {
+            throw VolumeQueryFailure.failed("APFS 快照不能作为普通可写卷操作")
+        }
+        if (raw["FilesystemName"] as? String)?.lowercased() == "hfs standard" {
+            throw VolumeQueryFailure.unsupportedFileSystem("HFS Standard")
+        }
         guard let device = raw["DeviceIdentifier"] as? String else { throw VolumeQueryFailure.malformed("缺少设备标识") }
         guard let uuid = raw["VolumeUUID"] as? String, let canonical = UUID(uuidString: uuid)?.uuidString else {
             throw VolumeQueryFailure.missingUUID

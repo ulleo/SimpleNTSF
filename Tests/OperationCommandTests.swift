@@ -120,20 +120,20 @@ struct OperationCommandTests {
         print("PASS: launch, nonzero, sudo diagnostics and timeout failures preserve causes and verified state")
         let unmounted = exercise(config: config, uuid: uuid, target: target, operation: .unmount,
             commandResults: [CommandResult(outcome: .exited(0))], mountedAfter: false)
-        expect(unmounted.calls == [["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/disk99s1"]] && unmounted.deadlines == [10], "mechanical migration must retain existing unmount arguments and deadline")
+        expect(unmounted.calls == [["-n", Constants.diskUtilPath, "unmount", "/dev/disk99s1"]] && unmounted.deadlines == [10], "selected volume must use volume-scoped unmount without force")
         let remounted = exercise(config: config, uuid: uuid, target: target, operation: .remount,
             commandResults: [CommandResult(outcome: .exited(0)), CommandResult(outcome: .exited(5), stderr: Data("mount refused".utf8))], mountedAfter: false)
         expect(remounted.calls.count == 2 && remounted.result.commandOutcome == .exited(5) && !remounted.disk.isMounted, "partial remount failure must preserve failing step outcome and verify unmounted state without retry")
-        print("PASS: unmount and partial remount use the shared executor without changing command policy")
+        print("PASS: volume-scoped unmount and partial remount use shared execution")
         let mappings: [(String, [String])] = [
             ("ExFAT", ["-t", "exfat"]), ("MS-DOS FAT32", ["-t", "msdos"]),
-            ("Journaled HFS+", ["-t", "hfs"]), ("APFS", [])
+            ("Journaled HFS+", ["-t", "hfs"]), ("APFS", ["-t", "apfs"])
         ]
         for (fileSystem, flags) in mappings {
             let tested = exercise(config: config, uuid: uuid, target: target, operation: .mount, fileSystem: fileSystem,
                 commandResults: [CommandResult(outcome: .exited(0))], mountedAfter: true)
-            expect(tested.calls == [["-n", "/sbin/mount"] + flags + ["/dev/disk99s1", target.path]], "system mount mapping must remain unchanged until the capability-policy ticket")
+            expect(tested.calls == [["-n", "/sbin/mount"] + flags + ["/dev/disk99s1", target.path]], "system mount mapping must match supported filesystem capabilities")
         }
-        print("PASS: existing filesystem command mappings survive executor migration")
+        print("PASS: supported filesystem commands include explicit APFS and other required type flags")
     }
 }
