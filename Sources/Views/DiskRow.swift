@@ -17,7 +17,7 @@ struct DiskRow: View {
     }
     
     private var needsRemount: Bool {
-        disk.isMounted && disk.currentMount != disk.mountPoint && !disk.currentMount.isEmpty && disk.currentMount != "-"
+        disk.needsRemount
     }
     
     private var isRemounting: Bool {

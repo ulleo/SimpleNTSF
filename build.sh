@@ -13,6 +13,7 @@ mkdir -p "$BUILD_DIR" "$APP_DIR"
 # 收集所有 Swift 源文件
 SWIFT_FILES=(
     "$SOURCES_DIR/Utilities/Constants.swift"
+    "$SOURCES_DIR/Utilities/MountPoint.swift"
     "$SOURCES_DIR/Models/DiskInfo.swift"
     "$SOURCES_DIR/Models/PhysicalDisk.swift"
     "$SOURCES_DIR/Services/DiskManager.swift"

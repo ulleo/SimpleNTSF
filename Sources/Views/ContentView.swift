@@ -288,15 +288,11 @@ struct ContentView: View {
             AddDiskSheet(uuid: $newUUID, mountPoint: $newMountPoint, onSave: {
                 let result = manager.addDisk(uuid: newUUID, mountPoint: newMountPoint)
                 if result.success {
-                    self.refreshWithCompletion()
                     showingAddDialog = false
                     newUUID = ""
                     newMountPoint = ""
-                } else {
-                    alertMessage = result.message
-                    alertIsError = true
-                    showingAlert = true
                 }
+                return result
             }, onCancel: {
                 showingAddDialog = false
                 newUUID = ""
@@ -305,17 +301,9 @@ struct ContentView: View {
         }
         .sheet(item: $editingDisk) { disk in
             EditMountPointSheet(diskInfo: disk, onSave: { newMountPoint in
-                if !newMountPoint.isEmpty {
-                    let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
-                    if result.success {
-                        manager.updateDiskMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
-                        editingDisk = nil
-                    } else {
-                        alertMessage = result.message
-                        alertIsError = true
-                        showingAlert = true
-                    }
-                }
+                let result = manager.updateMountPoint(uuid: disk.uuid, newMountPoint: newMountPoint)
+                if result.success { editingDisk = nil }
+                return result
             }, onCancel: {
                 editingDisk = nil
             })
@@ -325,8 +313,10 @@ struct ContentView: View {
             Button("删除", role: .destructive) {
                 if let disk = deletingDisk {
                     let success = manager.deleteDisk(uuid: disk.uuid)
-                    if success {
-                        self.refreshWithCompletion()
+                    if !success {
+                        alertMessage = "删除挂载配置失败，请刷新后重试"
+                        alertIsError = true
+                        showingAlert = true
                     }
                     deletingDisk = nil
                 }

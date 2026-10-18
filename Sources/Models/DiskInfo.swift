@@ -14,6 +14,13 @@ struct DiskInfo: Identifiable, Codable, Equatable {
     var fileSystemType: String?
     
     var id: String { uuid }
+
+    var needsRemount: Bool {
+        guard isMounted, !currentMount.isEmpty, currentMount != "-" else { return false }
+        guard let actual = try? MountPoint.resolvedPath(currentMount),
+              let target = try? MountPoint.resolvedPath(mountPoint) else { return true }
+        return actual != target
+    }
     
     init(uuid: String, volumeName: String, mountPoint: String, device: String, currentMount: String, isMounted: Bool, usage: String? = nil, isTimeout: Bool = false, fileSystemType: String? = nil) {
         self.uuid = uuid
