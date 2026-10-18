@@ -6,6 +6,11 @@ SOURCES_DIR="$SCRIPT_DIR/Sources"
 BUILD_DIR="${SIMPLENTFS_BUILD_DIR:-$SCRIPT_DIR/.build}"
 APP_BUNDLE="${SIMPLENTFS_APP_DIR:-$SCRIPT_DIR/apps/SimpleNTFS.app}"
 SDK="${SDKROOT:-$(xcrun --show-sdk-path)}"
+APP_VERSION="$(awk -F '"' '/static let appVersion =/ { print $2 }' "$SOURCES_DIR/Utilities/Constants.swift")"
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Invalid app version: $APP_VERSION" >&2
+    exit 1
+fi
 
 mkdir -p "$BUILD_DIR"
 STAGING_DIR="$(mktemp -d "$BUILD_DIR/compile.XXXXXX")"
@@ -22,7 +27,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 cp "$STAGING_DIR/SimpleNTFS" "$BUILD_DIR/SimpleNTFS"
 cp "$STAGING_DIR/SimpleNTFS" "$APP_BUNDLE/Contents/MacOS/SimpleNTFS"
 
-cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
+cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -30,6 +35,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
     <key>CFBundleExecutable</key><string>SimpleNTFS</string>
     <key>CFBundleIdentifier</key><string>com.local.simplentfs</string>
     <key>CFBundleName</key><string>SimpleNTFS</string>
+    <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
+    <key>CFBundleVersion</key><string>$APP_VERSION</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>

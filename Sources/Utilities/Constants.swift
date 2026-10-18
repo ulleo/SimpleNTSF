@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Constants
 
 enum Constants {
-    static let appVersion = "1.2.1"
+    static let appVersion = "1.3.0"
     static let configDirName = ".SimpleNTFS"
     static let configFileName = "ntfs-disks.conf"
     static let mountNTFSPath = "/opt/homebrew/sbin/mount_ntfs"
