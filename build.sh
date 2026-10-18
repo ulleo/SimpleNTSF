@@ -21,6 +21,7 @@ SWIFT_FILES=(
     "$SOURCES_DIR/Services/VolumeQuery.swift"
     "$SOURCES_DIR/Services/DiskManager.swift"
     "$SOURCES_DIR/Services/PermissionConfiguration.swift"
+    "$SOURCES_DIR/Services/PermissionSetup.swift"
     "$SOURCES_DIR/Views/DiskRow.swift"
     "$SOURCES_DIR/Views/DiskListItem.swift"
     "$SOURCES_DIR/Views/AddDiskSheet.swift"
