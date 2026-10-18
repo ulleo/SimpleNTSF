@@ -1,7 +1,4 @@
 import SwiftUI
-import os.log
-
-private let logger = Logger(subsystem: "com.simplentfs.app", category: "ContentView")
 
 // MARK: - Main View
 
@@ -20,13 +17,11 @@ struct ContentView: View {
     @State private var unmountingDisk: DiskInfo?
     @State private var showingRemountConfirm = false
     @State private var remountingDisk: DiskInfo?
-    @State private var isConfiguring = false
-    @State private var setupResult: String?
-    @State private var setupSuccess = false
+    @StateObject private var permissionSetup = PermissionSetup()
     @State private var showingAlert = false
-    @State private var permissionStatus: PermissionConfiguration.Status = .missing
+    private var permissionStatus: PermissionConfiguration.Status { permissionSetup.status }
     private var isPasswordFree: Bool { permissionStatus == .configured }
-    @State private var isBatchOperating = false
+    private var isBatchOperating: Bool { manager.isBatchOperating }
     
     private var hasLoading: Bool {
         !manager.operatingUUIDs.isEmpty
@@ -86,7 +81,7 @@ struct ContentView: View {
                             .cornerRadius(6)
                         }
                         .buttonStyle(.plain)
-                        .disabled(isConfiguring)
+                        .disabled(permissionSetup.isConfiguring)
                     } else {
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.circle.fill")
@@ -108,8 +103,10 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
 
-                if let result = setupResult {
-                    Text(result).font(.caption).foregroundColor(setupSuccess ? .green : .red)
+                if permissionSetup.isConfiguring {
+                    Text("正在等待管理员授权…").font(.caption).foregroundColor(.secondary)
+                } else if let result = permissionSetup.result {
+                    Text(result.message).font(.caption).foregroundColor(result.success ? .green : .red)
                 }
             }
             .padding(.top).padding(.bottom, 10)
@@ -325,22 +322,16 @@ struct ContentView: View {
         }
     }
 
-    // Serial batch results will be centralized and summarized in the batch-operation ticket.
     private func runBatch(operation: VolumeOperation) {
-        isBatchOperating = true
-        let targets = manager.disks.filter { operation == .mount ? $0.canMount : $0.canUnmount }
-        func next(_ index: Int) {
-            guard index < targets.count else { isBatchOperating = false; return }
-            manager.performOperation(uuid: targets[index].uuid, operation: operation) { _ in next(index + 1) }
+        manager.performBatch(operation: operation) { result in
+            alertMessage = result.message
+            alertIsError = result.hasFailures
+            showingAlert = true
         }
-        next(0)
     }
 
     func checkPasswordFreeStatus() {
-        let status = PermissionConfiguration.status()
-        DispatchQueue.main.async {
-            self.permissionStatus = status
-        }
+        permissionSetup.refreshStatus()
     }
     
     /// 带 loading 状态的刷新（单次加载，完成后回调）
@@ -349,72 +340,6 @@ struct ContentView: View {
     }
     
     func configureSudoers() {
-        isConfiguring = true
-        setupResult = "正在配置..."
-        
-        // 使用安全的用户名验证，防止注入
-        let currentUser = NSUserName()
-        let safeName = currentUser.components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
-        
-        // 使用 UUID 作为临时文件名，防止预测
-        let tempUUID = UUID().uuidString
-        let tempFile = "/tmp/simplentfs_sudoers_\(tempUUID)"
-        
-        let sudoersEntry = "\(safeName) ALL=(ALL) NOPASSWD: NOEXEC: \(Constants.mountNTFSPath), /sbin/mount, \(Constants.diskUtilPath)"
-        let script = "echo '\(sudoersEntry)' > '\(tempFile)' && chown root:wheel '\(tempFile)' && chmod 440 '\(tempFile)' && mv '\(tempFile)' '\(Constants.sudoersFilePath)'"
-        
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", "do shell script \"\(script)\" with prompt \"SimpleNTFS 需要管理员权限\" with administrator privileges"]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        let errorPipe = Pipe()
-        task.standardError = errorPipe
-        
-        DispatchQueue.global().async {
-            var errorMsg = ""
-            do {
-                try task.run()
-                task.waitUntilExit()
-                
-                let errorData = errorPipe.fileHandleForReading.availableData
-                if !errorData.isEmpty {
-                    errorMsg = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                }
-                
-                pipe.fileHandleForReading.closeFile()
-                errorPipe.fileHandleForReading.closeFile()
-                
-                DispatchQueue.main.async {
-                    isConfiguring = false
-                    let status = PermissionConfiguration.status()
-                    permissionStatus = status
-
-                    if task.terminationStatus == 0 && status == .configured {
-                        setupSuccess = true
-                        setupResult = "✅ 配置成功！现在挂载/卸载无需密码。"
-                        logger.info("Sudoers 配置成功")
-                    } else {
-                        setupSuccess = false
-                        let displayError = errorMsg.isEmpty
-                            ? (task.terminationStatus == 0 ? status.message : "配置失败（退出码：\(task.terminationStatus)）")
-                            : errorMsg
-                        setupResult = "❌ 配置失败：" + displayError
-                        logger.error("Sudoers 配置失败")
-                    }
-                }
-            } catch {
-                try? pipe.fileHandleForReading.close()
-                try? errorPipe.fileHandleForReading.close()
-                
-                DispatchQueue.main.async {
-                    isConfiguring = false
-                    setupSuccess = false
-                    setupResult = "❌ 配置失败：" + error.localizedDescription
-                    logger.error("Sudoers 配置异常：\(error.localizedDescription)")
-                }
-            }
-        }
+        permissionSetup.configure()
     }
 }

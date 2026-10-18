@@ -5,6 +5,12 @@ import os.log
 
 private let logger = Logger(subsystem: "com.simplentfs.app", category: "DiskManager")
 
+private struct OperationExecution {
+    var success: Bool
+    var message: String
+    var commandOutcome: CommandOutcome? = nil
+}
+
 // MARK: - Disk Manager
 
 class DiskManager: ObservableObject {
@@ -14,6 +20,9 @@ class DiskManager: ObservableObject {
     // Main-thread revision: a successful configuration write invalidates in-flight queries.
     private var configurationRevision = 0
     private var refreshDeferred = false
+    private var isVerifyingBatch = false
+    @Published private(set) var isBatchOperating = false
+    @Published private(set) var batchResult: BatchOperationResult?
     @Published private(set) var operatingUUIDs: Set<String> = []
     @Published private(set) var operationResults: [String: VolumeOperationResult] = [:]
     private let executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))?
@@ -114,7 +123,7 @@ class DiskManager: ObservableObject {
 
     /// All visible state and revision decisions belong to the main thread.
     private func beginRefresh() {
-        guard operatingUUIDs.isEmpty else {
+        guard operatingUUIDs.isEmpty && (!isBatchOperating || isVerifyingBatch) else {
             refreshDeferred = true
             return
         }
@@ -261,17 +270,87 @@ class DiskManager: ObservableObject {
     func getFileSystemType(uuid: String) -> String? {
         try? VolumeQuery(execute: executeCommand).details(identifier: uuid).fileSystemType
     }
+    /// Freeze membership, then recheck the current configuration and state before each step.
+    func performBatch(operation: VolumeOperation, completion: @escaping (BatchOperationResult) -> Void = { _ in }) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.performBatch(operation: operation, completion: completion) }
+            return
+        }
+        guard !isBatchOperating && operatingUUIDs.isEmpty else {
+            completion(BatchOperationResult(operation: operation, items: [], rejectionReason: "已有磁盘操作进行中，请稍后重试"))
+            return
+        }
+        let targets = disks
+        var results: [BatchVolumeResult] = []
+        isBatchOperating = true
+        batchResult = nil
+
+        func finish() {
+            self.isVerifyingBatch = true
+            self.loadConfig {
+                let verifiedResults = results.map { item -> BatchVolumeResult in
+                    if item.status == .succeeded, let disk = self.disks.first(where: { $0.uuid == item.uuid }), !disk.isStateConfirmed {
+                        return BatchVolumeResult(uuid: item.uuid, volumeName: item.volumeName, status: .failed,
+                            message: "操作已结束，状态未确认：" + (disk.queryFailureMessage ?? "请刷新重试"), operationResult: item.operationResult)
+                    }
+                    return item
+                }
+                let result = BatchOperationResult(operation: operation, items: verifiedResults, refreshError: self.refreshError)
+                self.batchResult = result
+                self.isVerifyingBatch = false
+                self.isBatchOperating = false
+                completion(result)
+            }
+            // A configuration change or user refresh may already be waiting behind this batch.
+            if self.refreshDeferred { self.beginRefresh() }
+        }
+
+        func next(_ startIndex: Int) {
+            var index = startIndex
+            while index < targets.count {
+                let target = targets[index]
+                let current = self.disks.first { $0.uuid == target.uuid }
+                let reason: String?
+                if current == nil { reason = "挂载配置已删除" }
+                else if current?.isStateConfirmed != true { reason = "卷状态未确认，请刷新后重试" }
+                else if operation == .mount && current?.canMount != true { reason = "卷已挂载" }
+                else if operation != .mount && current?.canUnmount != true { reason = "卷未挂载" }
+                else { reason = nil }
+                if let reason = reason {
+                    results.append(BatchVolumeResult(uuid: target.uuid, volumeName: target.volumeName,
+                        status: .skipped, message: reason, operationResult: nil))
+                    index += 1
+                    continue
+                }
+                let nextIndex = index + 1
+                self.startOperation(uuid: target.uuid, operation: operation, batchStep: true) { outcome in
+                    results.append(BatchVolumeResult(uuid: target.uuid, volumeName: target.volumeName,
+                        status: outcome.success ? .succeeded : .failed, message: outcome.message, operationResult: outcome))
+                    next(nextIndex)
+                }
+                return
+            }
+            finish()
+        }
+        next(0)
+    }
 
     /// The operation remains busy until its actual volume state has been queried and published.
     func performOperation(uuid: String, operation: VolumeOperation,
                           completion: @escaping (VolumeOperationResult) -> Void = { _ in }) {
+        startOperation(uuid: uuid, operation: operation, batchStep: false, completion: completion)
+    }
+
+    private func startOperation(uuid: String, operation: VolumeOperation, batchStep: Bool,
+                                completion: @escaping (VolumeOperationResult) -> Void) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.performOperation(uuid: uuid, operation: operation, completion: completion) }
+            DispatchQueue.main.async { self.startOperation(uuid: uuid, operation: operation, batchStep: batchStep, completion: completion) }
             return
         }
         let disk = disks.first { $0.uuid == uuid }
         let rejection: String?
-        if operatingUUIDs.contains(uuid) { rejection = "该卷正在操作中，请稍后重试" }
+        if isBatchOperating && !batchStep { rejection = "批量操作进行中，请稍后重试" }
+        else if operatingUUIDs.contains(uuid) { rejection = "该卷正在操作中，请稍后重试" }
         else if disk?.isStateConfirmed != true { rejection = "卷状态未确认，请刷新后重试" }
         else if operation == .mount && disk?.canMount != true { rejection = "卷已挂载，请使用重新挂载" }
         else if operation != .mount && disk?.canUnmount != true { rejection = "卷未挂载" }
@@ -286,13 +365,17 @@ class DiskManager: ObservableObject {
         operationResults.removeValue(forKey: uuid)
         configurationRevision += 1
         DispatchQueue.global().async {
-            let outcome: (success: Bool, message: String)
+            var outcome: OperationExecution
             if operation == .remount {
                 let unmounted = self.executeStep(.unmount, disk: disk)
                 if unmounted.success {
                     let mounted = self.executeStep(.mount, disk: disk)
-                    outcome = mounted.success ? (true, "重新挂载成功") : (false, "挂载失败：" + mounted.message)
-                } else { outcome = (false, "卸载失败：" + unmounted.message) }
+                    outcome = mounted
+                    outcome.message = mounted.success ? "重新挂载成功" : "挂载失败：" + mounted.message
+                } else {
+                    outcome = unmounted
+                    outcome.message = "卸载失败：" + unmounted.message
+                }
             } else {
                 outcome = self.executeStep(operation, disk: disk)
             }
@@ -304,7 +387,7 @@ class DiskManager: ObservableObject {
                     self.disks[index] = updated
                 }
                 let result = VolumeOperationResult(operation: operation, commandSucceeded: outcome.success,
-                    commandMessage: outcome.message, queryState: verified.queryState)
+                    commandMessage: outcome.message, queryState: verified.queryState, commandOutcome: outcome.commandOutcome)
                 self.operationResults[uuid] = result
                 self.configurationRevision += 1
                 self.operatingUUIDs.remove(uuid)
@@ -314,8 +397,11 @@ class DiskManager: ObservableObject {
         }
     }
 
-    private func executeStep(_ operation: VolumeOperation, disk: DiskInfo) -> (success: Bool, message: String) {
-        if let executeOperation = executeOperation { return executeOperation(operation, disk) }
+    private func executeStep(_ operation: VolumeOperation, disk: DiskInfo) -> OperationExecution {
+        if let executeOperation = executeOperation {
+            let result = executeOperation(operation, disk)
+            return OperationExecution(success: result.success, message: result.message)
+        }
         switch operation {
         case .mount: return executeMount(uuid: disk.uuid, mountPoint: disk.mountPoint)
         case .unmount: return executeUnmount(uuid: disk.uuid, mountPoint: disk.currentMount)
@@ -323,18 +409,18 @@ class DiskManager: ObservableObject {
         }
     }
 
-    private func executeMount(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+    private func executeMount(uuid: String, mountPoint: String) -> OperationExecution {
         let resolvedMountPoint: String
         do { resolvedMountPoint = try MountPoint.normalize(mountPoint) }
-        catch { return (false, error.localizedDescription) }
+        catch { return OperationExecution(success: false, message: error.localizedDescription) }
 
         
         let device = findDevice(byUUID: uuid)
-        guard device != "未找到" else { return (false, "未找到设备") }
+        guard device != "未找到" else { return OperationExecution(success: false, message: "未找到设备") }
         
         // 验证设备名格式
         guard isValidDeviceName(device) else {
-            return (false, "无效的设备名格式")
+            return OperationExecution(success: false, message: "无效的设备名格式")
         }
         
         let fm = FileManager.default
@@ -344,7 +430,7 @@ class DiskManager: ObservableObject {
                 logger.info("创建挂载点目录：\(resolvedMountPoint)")
             }
         } catch {
-            return (false, "无法创建挂载点目录：\(error.localizedDescription)")
+            return OperationExecution(success: false, message: "无法创建挂载点目录：\(error.localizedDescription)")
         }
         
         // 获取文件系统类型
@@ -369,122 +455,33 @@ class DiskManager: ObservableObject {
             mountArgs = fsFlag + ["/dev/" + device, resolvedMountPoint]
         }
         
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        task.arguments = ["-n"] + [mountCommand] + mountArgs
-        
-        logger.info("执行挂载命令：sudo -n \(mountCommand) \(mountArgs.joined(separator: " "))")
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        let errorPipe = Pipe()
-        task.standardError = errorPipe
-        
-        // 使用信号量 + 超时，防止无限等待
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
-        
-        do {
-            try task.run()
-            
-            let result = semaphore.wait(timeout: .now() + 15)
-            
-            if result == .timedOut {
-                task.terminate()
-                Thread.sleep(forTimeInterval: 0.5)
-                if task.isRunning {
-                    task.interrupt()
-                }
-                pipe.fileHandleForReading.closeFile()
-                errorPipe.fileHandleForReading.closeFile()
-                logger.warning("挂载命令超时 (15秒)，uuid=\(uuid.prefix(8))...")
-                return (false, "挂载超时")
-            }
-            
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
-            
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-            
-            if task.terminationStatus == 0 {
-                logger.info("挂载成功：\(uuid) -> \(mountPoint)")
-                return (true, "挂载成功！")
-            } else {
-                logger.error("挂载失败：\(errorMessage)")
-                return (false, errorMessage.isEmpty ? "挂载失败" : errorMessage)
-            }
-        } catch {
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-            logger.error("执行挂载命令失败：\(error.localizedDescription)")
-            return (false, "执行失败：\(error.localizedDescription)")
-        }
+        let result = executeCommand("/usr/bin/sudo", ["-n", mountCommand] + mountArgs, 15)
+        return operationExecution(result, successMessage: "挂载成功！")
     }
-    
-    private func executeUnmount(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+
+    private func executeUnmount(uuid: String, mountPoint: String) -> OperationExecution {
         let device = findDevice(byUUID: uuid)
-        guard device != "未找到" else { return (false, "未找到设备") }
+        guard device != "未找到" else { return OperationExecution(success: false, message: "未找到设备") }
         
         // 验证设备名格式
         guard isValidDeviceName(device) else {
-            return (false, "无效的设备名格式")
+            return OperationExecution(success: false, message: "无效的设备名格式")
         }
         
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        let args: [String] = ["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/" + device]
-        task.arguments = args
-        
-        logger.info("执行卸载命令：\(args.joined(separator: " "))")
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        let errorPipe = Pipe()
-        task.standardError = errorPipe
-        
-        // 使用信号量 + 超时，防止无限等待
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
-        
-        do {
-            try task.run()
-            
-            let result = semaphore.wait(timeout: .now() + 10)
-            
-            if result == .timedOut {
-                task.terminate()
-                Thread.sleep(forTimeInterval: 0.5)
-                if task.isRunning {
-                    task.interrupt()
-                }
-                pipe.fileHandleForReading.closeFile()
-                errorPipe.fileHandleForReading.closeFile()
-                logger.warning("卸载命令超时 (10秒)，uuid=\(uuid.prefix(8))...")
-                return (false, "卸载超时，磁盘可能被占用")
-            }
-            
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? ""
-            
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-            
-            if task.terminationStatus == 0 {
-                logger.info("卸载成功：\(uuid)")
-                return (true, "卸载成功！")
-            } else {
-                logger.error("卸载失败：\(errorMessage)")
-                return (false, errorMessage.isEmpty ? "卸载失败" : errorMessage)
-            }
-        } catch {
-            pipe.fileHandleForReading.closeFile()
-            errorPipe.fileHandleForReading.closeFile()
-            logger.error("执行卸载命令失败：\(error.localizedDescription)")
-            return (false, "执行失败：\(error.localizedDescription)")
-        }
+        let args = ["-n", Constants.diskUtilPath, "unmountDisk", "force", "/dev/" + device]
+        let result = executeCommand("/usr/bin/sudo", args, 10)
+        return operationExecution(result, successMessage: "卸载成功！")
     }
-    
+
+    private func operationExecution(_ result: CommandResult, successMessage: String) -> OperationExecution {
+        var message = result.success ? successMessage : result.message
+        let diagnostic = String(decoding: result.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !result.success && !diagnostic.isEmpty && !message.contains(diagnostic) {
+            message += "；" + diagnostic
+        }
+        return OperationExecution(success: result.success, message: message, commandOutcome: result.outcome)
+    }
+
     func addDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.addDisk(uuid: uuid, mountPoint: mountPoint) }
