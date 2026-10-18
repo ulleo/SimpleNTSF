@@ -2,11 +2,21 @@ import Foundation
 
 enum VolumeQueryFailure: Error, Equatable {
     case timedOut
+    case offline
+    case missingUUID
+    case malformed(String)
+    case unsupportedFileSystem(String)
+    case unknownLocation
     case failed(String)
 
     var message: String {
         switch self {
         case .timedOut: return "查询超时，请刷新重试"
+        case .offline: return "卷已离线，请连接后刷新"
+        case .missingUUID: return "卷缺少有效 UUID，无法保存挂载配置"
+        case .malformed(let message): return "无法解析磁盘信息：" + message
+        case .unsupportedFileSystem(let name): return "不支持的文件系统：" + name
+        case .unknownLocation: return "无法确认卷是否来自外置硬盘"
         case .failed(let message): return message
         }
     }

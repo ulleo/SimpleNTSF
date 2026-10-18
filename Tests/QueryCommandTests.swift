@@ -19,9 +19,9 @@ private final class QueryCommands {
         let output: String
         switch executable {
         case Constants.diskUtilPath:
-            output = "Device Identifier: disk99s1\nVolume Name: Test: Volume\nFile System Personality: NTFS\n"
-        case "/sbin/mount":
-            output = "/dev/disk99s1 on /Volumes/Fixture Disk (ntfs, local)\n"
+            guard arguments.first == "info" else { return CommandResult(outcome: .exited(1)) }
+            let synthetic: [String: Any] = ["DeviceIdentifier": "disk99s1", "VolumeUUID": "12345678-1234-1234-1234-123456789ABC", "VolumeName": "Test: Volume", "FilesystemType": "ntfs", "MountPoint": "/Volumes/Fixture Disk"]
+            return CommandResult(outcome: .exited(0), stdout: try! PropertyListSerialization.data(fromPropertyList: synthetic, format: .xml, options: 0))
         case "/bin/df":
             expect(arguments == ["-h", "/Volumes/Fixture Disk"], "usage must query the actual mount, retaining spaces")
             output = "Filesystem Size Used Avail Capacity\n/dev/disk99s1 2Gi 1Gi 1Gi 50%\n"
@@ -53,7 +53,7 @@ struct QueryCommandTests {
         expect(manager.disks.first?.volumeName == "Test: Volume", "command output fields must retain embedded colons")
         expect(manager.disks.first?.usage == "1Gi / 2Gi (50%)", "usage output must be shown")
         let confirmed = manager.disks[0]
-        for path in [Constants.diskUtilPath, "/sbin/mount", "/bin/df"] {
+        for path in [Constants.diskUtilPath, "/bin/df"] {
             for failure in [CommandOutcome.exited(7), .launchFailed("fixture missing"), .timedOut, .outputIncomplete] {
                 commands.failurePath = path
                 commands.outcome = failure
@@ -73,6 +73,6 @@ struct QueryCommandTests {
                 expect(manager.disks[0].isStateConfirmed && manager.disks[0].canUnmount, "successful retry must restore confirmed operations")
             }
         }
-        print("PASS: volume, mount and usage command failures become unconfirmed state and recover on refresh")
+        print("PASS: structured volume and usage command failures become unconfirmed state and recover on refresh")
     }
 }

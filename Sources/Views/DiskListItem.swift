@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Disk List Item
 
 struct DiskListItem: View {
-    let disk: PhysicalDisk
+    let disk: DiscoveredVolume
     let isSelected: Bool
     let onSelect: (String) -> Void
     
