@@ -8,7 +8,7 @@ private let logger = Logger(subsystem: "com.simplentfs.app", category: "AddDiskS
 struct AddDiskSheet: View {
     @Binding var uuid: String
     @Binding var mountPoint: String
-    let onSave: () -> Void
+    let onSave: () -> (success: Bool, message: String)
     let onCancel: () -> Void
     let addedUUIDs: Set<String>
     
@@ -82,23 +82,11 @@ struct AddDiskSheet: View {
                         showError = true
                         return
                     }
-                    let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
-                    let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
-                    let home = FileManager.default.homeDirectoryForCurrentUser.path
-                    
-                    if !resolvedMountPoint.hasPrefix(home) {
-                        errorMessage = "挂载点必须位于用户目录下：\(home)"
+                    let result = onSave()
+                    if !result.success {
+                        errorMessage = result.message
                         showError = true
-                        return
                     }
-                    for prefix in Constants.forbiddenMountPrefixes {
-                        if resolvedMountPoint.hasPrefix(prefix) {
-                            errorMessage = "不允许挂载到系统目录：\(prefix)"
-                            showError = true
-                            return
-                        }
-                    }
-                    onSave()
                 }) {
                     HStack { Image(systemName: "disk"); Text("保存") }
                 }.buttonStyle(.borderedProminent)

@@ -69,28 +69,12 @@ class DiskManager: ObservableObject {
     }
     
     func validateMountPoint(_ path: String) -> (valid: Bool, message: String) {
-        let expanded = (path as NSString).expandingTildeInPath
-        let resolved = URL(fileURLWithPath: expanded).standardized.path
-        
-        for prefix in Constants.forbiddenMountPrefixes {
-            if resolved.hasPrefix(prefix) {
-                return (false, "不允许挂载到系统目录：\(prefix)")
-            }
+        do {
+            _ = try MountPoint.normalize(path)
+            return (true, "")
+        } catch {
+            return (false, error.localizedDescription)
         }
-        
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if !resolved.hasPrefix(home) {
-            return (false, "挂载点必须位于用户目录下：\(home)")
-        }
-        
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory) {
-            if !isDirectory.boolValue {
-                return (false, "挂载点已存在但不是目录")
-            }
-        }
-        
-        return (true, "")
     }
     
     /// 验证设备名格式，防止路径遍历攻击
@@ -149,16 +133,15 @@ class DiskManager: ObservableObject {
                         continue
                     }
                     
-                    let validation = self.validateMountPoint(mountPoint)
-                    if !validation.valid {
-                        logger.warning("跳过无效的挂载点：\(mountPoint) - \(validation.message)")
+                    guard let normalizedMountPoint = try? MountPoint.normalize(mountPoint) else {
+                        logger.warning("跳过无效的挂载点：\(mountPoint)")
                         continue
                     }
                     
                     let newDisk = DiskInfo(
                         uuid: uuid,
                         volumeName: "查询中…",
-                        mountPoint: mountPoint,
+                        mountPoint: normalizedMountPoint,
                         device: "查询中…",
                         currentMount: "查询中…",
                         isMounted: false,
@@ -497,31 +480,11 @@ class DiskManager: ObservableObject {
         }
     }
     
-    func updateDiskMountPoint(uuid: String, newMountPoint: String) {
-        if let index = disks.firstIndex(where: { $0.uuid == uuid }) {
-            let oldDisk = disks[index]
-            if oldDisk.mountPoint != newMountPoint {
-                disks[index] = DiskInfo(
-                    uuid: oldDisk.uuid,
-                    volumeName: oldDisk.volumeName,
-                    mountPoint: newMountPoint,
-                    device: oldDisk.device,
-                    currentMount: oldDisk.currentMount,
-                    isMounted: oldDisk.isMounted,
-                    usage: oldDisk.usage
-                )
-            }
-        }
-    }
-    
     func mountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
-        let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
-        let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
-        
-        let validation = validateMountPoint(resolvedMountPoint)
-        if !validation.valid {
-            return (false, validation.message)
-        }
+        let resolvedMountPoint: String
+        do { resolvedMountPoint = try MountPoint.normalize(mountPoint) }
+        catch { return (false, error.localizedDescription) }
+
         
         let device = findDevice(byUUID: uuid)
         guard device != "未找到" else { return (false, "未找到设备") }
@@ -680,27 +643,35 @@ class DiskManager: ObservableObject {
     }
     
     func addDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+        guard Thread.isMainThread else {
+            return DispatchQueue.main.sync { self.addDisk(uuid: uuid, mountPoint: mountPoint) }
+        }
         guard isValidUUID(uuid) else {
             return (false, "无效的 UUID 格式，请使用类似 E0719CA3-71B2-12E0-A9E0-12B4EA12B4C2 的格式")
         }
         
-        let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
-        let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
-        let validation = validateMountPoint(mountPoint)
-        if !validation.valid {
-            return (false, validation.message)
-        }
+        let resolvedMountPoint: String
+        do { resolvedMountPoint = try MountPoint.normalize(mountPoint) }
+        catch { return (false, error.localizedDescription) }
+
         
         fileLock.lock()
         defer { fileLock.unlock() }
         
-        var content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        guard var content = try? String(contentsOfFile: configPath, encoding: .utf8) else {
+            return (false, "读取配置文件失败")
+        }
+        guard !content.components(separatedBy: "\n").contains(where: {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):")
+        }) else { return (false, "该卷已存在挂载配置") }
         if !content.isEmpty && !content.hasSuffix("\n") { content += "\n" }
         content += "\(uuid):\(resolvedMountPoint)\n"
         
         do {
-            try content.write(toFile: configPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            try writeConfiguration(content)
+            disks.append(DiskInfo(uuid: uuid, volumeName: "查询中…", mountPoint: resolvedMountPoint,
+                                  device: "查询中…", currentMount: "查询中…", isMounted: false))
+            loadConfig()
             logger.info("添加硬盘配置：\(uuid) -> \(resolvedMountPoint)")
             return (true, "")
         } catch {
@@ -710,12 +681,13 @@ class DiskManager: ObservableObject {
     }
     
     func updateMountPoint(uuid: String, newMountPoint: String) -> (success: Bool, message: String) {
-        let expandedMountPoint = (newMountPoint as NSString).expandingTildeInPath
-        let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
-        let validation = validateMountPoint(newMountPoint)
-        if !validation.valid {
-            return (false, validation.message)
+        guard Thread.isMainThread else {
+            return DispatchQueue.main.sync { self.updateMountPoint(uuid: uuid, newMountPoint: newMountPoint) }
         }
+        let resolvedMountPoint: String
+        do { resolvedMountPoint = try MountPoint.normalize(newMountPoint) }
+        catch { return (false, error.localizedDescription) }
+
         
         fileLock.lock()
         defer { fileLock.unlock() }
@@ -724,20 +696,19 @@ class DiskManager: ObservableObject {
             return (false, "读取配置文件失败")
         }
         var lines = content.components(separatedBy: "\n")
-        
-        for i in 0..<lines.count {
-            if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):") {
-                lines[i] = "\(uuid):\(resolvedMountPoint)"
-                break
-            }
+        guard let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(uuid):") }) else {
+            return (false, "未找到挂载配置，请刷新后重试")
         }
-        
+        lines[index] = "\(uuid):\(resolvedMountPoint)"
+
         content = lines.joined(separator: "\n")
         if !content.hasSuffix("\n") && !content.isEmpty { content += "\n" }
         
         do {
-            try content.write(toFile: configPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            try writeConfiguration(content)
+            if let index = disks.firstIndex(where: { $0.uuid == uuid }) {
+                disks[index].mountPoint = resolvedMountPoint
+            }
             logger.info("更新挂载点：\(uuid) -> \(resolvedMountPoint)")
             return (true, "")
         } catch {
@@ -747,6 +718,9 @@ class DiskManager: ObservableObject {
     }
     
     func deleteDisk(uuid: String) -> Bool {
+        guard Thread.isMainThread else {
+            return DispatchQueue.main.sync { self.deleteDisk(uuid: uuid) }
+        }
         fileLock.lock()
         defer { fileLock.unlock() }
         
@@ -765,8 +739,8 @@ class DiskManager: ObservableObject {
         if !content.hasSuffix("\n") && !content.isEmpty { content += "\n" }
         
         do {
-            try content.write(toFile: configPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+            try writeConfiguration(content)
+            disks.removeAll { $0.uuid == uuid }
             logger.info("删除硬盘配置：\(uuid)")
             return true
         } catch {
@@ -774,4 +748,17 @@ class DiskManager: ObservableObject {
             return false
         }
     }
+    /// Stage content and permissions before atomically replacing the existing configuration.
+    /// A failed write or permission change therefore cannot partially commit a save.
+    private func writeConfiguration(_ content: String) throws {
+        let destination = URL(fileURLWithPath: configPath)
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".simplentfs-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try Data(content.utf8).write(to: temporary, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+        guard rename(temporary.path, destination.path) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+    }
+
 }

@@ -4,7 +4,7 @@ import SwiftUI
 
 struct EditMountPointSheet: View {
     let diskInfo: DiskInfo?
-    let onSave: (String) -> Void
+    let onSave: (String) -> (success: Bool, message: String)
     let onCancel: () -> Void
     
     @State private var mountPoint = ""
@@ -44,23 +44,11 @@ struct EditMountPointSheet: View {
                 Button("取消", action: onCancel).buttonStyle(.bordered)
                 Spacer()
                 Button("保存", action: {
-                    let expandedMountPoint = (mountPoint as NSString).expandingTildeInPath
-                    let resolvedMountPoint = URL(fileURLWithPath: expandedMountPoint).standardized.path
-                    let home = FileManager.default.homeDirectoryForCurrentUser.path
-                    
-                    if !resolvedMountPoint.hasPrefix(home) {
-                        errorMessage = "挂载点必须位于用户目录下：\(home)"
+                    let result = onSave(mountPoint)
+                    if !result.success {
+                        errorMessage = result.message
                         showError = true
-                        return
                     }
-                    for prefix in Constants.forbiddenMountPrefixes {
-                        if resolvedMountPoint.hasPrefix(prefix) {
-                            errorMessage = "不允许挂载到系统目录：\(prefix)"
-                            showError = true
-                            return
-                        }
-                    }
-                    onSave(mountPoint)
                 }).buttonStyle(.borderedProminent).disabled(mountPoint.isEmpty)
             }
             .alert("提示", isPresented: $showError) { Button("确定", role: .cancel) {} } message: { Text(errorMessage) }
