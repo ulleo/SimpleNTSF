@@ -3,7 +3,7 @@ import Foundation
 @main
 struct PermissionSetupTests {
     static func main() throws {
-        let complete = "alice ALL=(ALL) NOPASSWD: NOEXEC: /opt/homebrew/sbin/mount_ntfs, /sbin/mount, /usr/sbin/diskutil"
+        let complete = "alice ALL=(ALL) NOPASSWD: EXEC: /opt/homebrew/sbin/mount_ntfs, /sbin/mount, /usr/sbin/diskutil"
         var authorizationScript = ""
         let gate = DispatchSemaphore(value: 0)
         let setup = PermissionSetup(username: "alice", execute: { executable, arguments, timeout in
@@ -48,7 +48,8 @@ struct PermissionSetupTests {
             (CommandResult(outcome: .launchFailed("missing executable")), "启动失败"),
             (CommandResult(outcome: .exited(1), stderr: Data("installation denied".utf8)), "installation denied"),
             (CommandResult(outcome: .exited(0), stdout: Data("alice ALL=(ALL) NOPASSWD: /opt/homebrew/sbin/mount_ntfs".utf8)), "缺少"),
-            (CommandResult(outcome: .exited(0)), "缺少")
+            (CommandResult(outcome: .exited(0)), "缺少"),
+            (CommandResult(outcome: .exited(0), stdout: Data(complete.replacingOccurrences(of: "alice", with: "mallory").utf8)), "缺少")
         ]
         for (command, diagnostic) in cases {
             let failed = PermissionSetup(username: "alice", execute: { _, _, _ in command }, readStatus: { .configured })

@@ -31,11 +31,11 @@ final class PermissionSetup: ObservableObject {
 
     init(username: String = NSUserName(), destination: String = Constants.sudoersFilePath,
          execute: @escaping CommandExecuting = { CommandRunner().run(executable: $0, arguments: $1, timeout: $2) },
-         readStatus: @escaping () -> PermissionConfiguration.Status = { PermissionConfiguration.status() }) {
+         readStatus: (() -> PermissionConfiguration.Status)? = nil) {
         self.username = username
         self.destination = destination
         self.execute = execute
-        self.readStatus = readStatus
+        self.readStatus = readStatus ?? { PermissionConfiguration.status(fileURL: URL(fileURLWithPath: destination), username: username) }
     }
 
     func refreshStatus() {
@@ -62,7 +62,7 @@ final class PermissionSetup: ObservableObject {
             let command = self.execute("/usr/bin/osascript", ["-e", Self.authorizationScript, shell], Self.administratorTimeout)
             let cancelled = command.success && String(decoding: command.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == Self.cancellationMarker
             let status = command.success && !cancelled
-                ? PermissionConfiguration.status(content: String(decoding: command.stdout, as: UTF8.self))
+                ? PermissionConfiguration.status(content: String(decoding: command.stdout, as: UTF8.self), username: self.username)
                 : self.readStatus()
             let result: Result
             if cancelled { result = .cancelled }

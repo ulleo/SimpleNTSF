@@ -20,7 +20,11 @@ struct ContentView: View {
     @StateObject private var permissionSetup = PermissionSetup()
     @State private var showingAlert = false
     private var permissionStatus: PermissionConfiguration.Status { permissionSetup.status }
-    private var isPasswordFree: Bool { permissionStatus == .configured }
+    private var isPasswordFree: Bool { permissionStatus == .configured && manager.authorizationFailures.isEmpty }
+    private var permissionMessage: String {
+        guard !manager.authorizationFailures.isEmpty else { return permissionStatus.message }
+        return "上次操作授权失败：" + manager.authorizationFailures.keys.sorted().compactMap { manager.authorizationFailures[$0] }.joined(separator: "；")
+    }
     private var isBatchOperating: Bool { manager.isBatchOperating }
     
     private var hasLoading: Bool {
@@ -85,7 +89,7 @@ struct ContentView: View {
                     } else {
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.circle.fill")
-                            Text(permissionStatus.message)
+                            Text(permissionMessage)
                         }
                         .font(.caption)
                         .foregroundColor(.green)
@@ -97,7 +101,7 @@ struct ContentView: View {
                 }
                 
                 if !isPasswordFree {
-                    Text(permissionStatus.message)
+                    Text(permissionMessage)
                         .font(.caption)
                         .foregroundColor(.orange)
                         .multilineTextAlignment(.center)
