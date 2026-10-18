@@ -131,6 +131,7 @@ class DiskManager: ObservableObject {
             defer { self.fileLock.unlock() }
             
             var newDisks: [DiskInfo] = []
+            var seenUUIDs: Set<String> = []
             
             let content: String
             do {
@@ -142,27 +143,17 @@ class DiskManager: ObservableObject {
             }
 
             let lines = content.components(separatedBy: "\n")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-            
-            logger.info("配置文件有 \(lines.count) 行有效配置")
-            
             for line in lines {
-                let parts = line.split(separator: ":", maxSplits: 1)
-                if parts.count == 2 {
-                    let uuid = String(parts[0]).trimmingCharacters(in: .whitespaces).uppercased()
-                    let mountPoint = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                    
-                    guard self.isValidUUID(uuid) else {
-                        logger.warning("跳过无效的 UUID 格式：\(uuid)")
-                        continue
-                    }
-                    
+                if let entry = self.configurationEntry(line) {
+                    let uuid = entry.uuid
+                    let mountPoint = entry.mountPoint
+
                     guard let normalizedMountPoint = try? MountPoint.normalize(mountPoint) else {
                         logger.warning("跳过无效的挂载点：\(mountPoint)")
                         continue
                     }
                     
+                    guard seenUUIDs.insert(uuid).inserted else { continue }
                     let newDisk = DiskInfo(
                         uuid: uuid,
                         volumeName: "",
@@ -220,7 +211,7 @@ class DiskManager: ObservableObject {
             DispatchQueue.global().async {
                 let result: Result<DiskInfo, VolumeQueryFailure>
                 do {
-                    var queried = try self.queryDisk?(disk) ?? self.queryCurrentDisk(disk)
+                    var queried = try self.queryDisk?(disk) ?? VolumeQuery(execute: self.executeCommand).refresh(disk)
                     if queried.isTimeout { throw VolumeQueryFailure.timedOut }
                     queried.uuid = disk.uuid
                     queried.mountPoint = disk.mountPoint
@@ -253,11 +244,6 @@ class DiskManager: ObservableObject {
         }
     }
 
-    private func queryCurrentDisk(_ disk: DiskInfo) throws -> DiskInfo {
-        try VolumeQuery(execute: executeCommand).refresh(disk)
-    }
-
-    /// Freeze membership, then recheck the current configuration and state before each step.
     func performBatch(operation: VolumeOperation, completion: @escaping (BatchOperationResult) -> Void = { _ in }) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { self.performBatch(operation: operation, completion: completion) }
@@ -472,7 +458,7 @@ class DiskManager: ObservableObject {
             return (false, "读取配置文件失败")
         }
         guard !content.components(separatedBy: "\n").contains(where: {
-            $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("\(uuid.uppercased()):")
+            configurationEntry($0)?.uuid == uuid
         }) else { return (false, "该卷已存在挂载配置") }
         if !content.isEmpty && !content.hasSuffix("\n") { content += "\n" }
         content += "\(uuid):\(resolvedMountPoint)\n"
@@ -496,6 +482,7 @@ class DiskManager: ObservableObject {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.updateMountPoint(uuid: uuid, newMountPoint: newMountPoint) }
         }
+        let uuid = uuid.uppercased()
         let resolvedMountPoint: String
         do { resolvedMountPoint = try MountPoint.normalize(newMountPoint) }
         catch { return (false, error.localizedDescription) }
@@ -507,15 +494,17 @@ class DiskManager: ObservableObject {
         guard var content = try? String(contentsOfFile: configPath, encoding: .utf8) else {
             return (false, "读取配置文件失败")
         }
-        var lines = content.components(separatedBy: "\n")
-        guard let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("\(uuid.uppercased()):") }) else {
-            return (false, "未找到挂载配置，请刷新后重试")
+        var replaced = false
+        var lines: [String] = []
+        for line in content.components(separatedBy: "\n") {
+            if configurationEntry(line)?.uuid == uuid {
+                if !replaced { lines.append("\(uuid):\(resolvedMountPoint)" + (line.hasSuffix("\r") ? "\r" : "")) }
+                replaced = true
+            } else { lines.append(line) }
         }
-        lines[index] = "\(uuid):\(resolvedMountPoint)"
-
+        guard replaced else { return (false, "未找到挂载配置，请刷新后重试") }
         content = lines.joined(separator: "\n")
-        if !content.hasSuffix("\n") && !content.isEmpty { content += "\n" }
-        
+
         do {
             try writeConfiguration(content)
             configurationRevision += 1
@@ -534,23 +523,14 @@ class DiskManager: ObservableObject {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.deleteDisk(uuid: uuid) }
         }
+        let uuid = uuid.uppercased()
         fileLock.lock()
         defer { fileLock.unlock() }
         
         guard var content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return false }
-        var lines = content.components(separatedBy: "\n")
-        
-        for i in 0..<lines.count {
-            if lines[i].trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("\(uuid.uppercased()):") {
-                lines.remove(at: i)
-                break
-            }
-        }
-        
+        let lines = content.components(separatedBy: "\n").filter { configurationEntry($0)?.uuid != uuid }
         content = lines.joined(separator: "\n")
-        while content.hasSuffix("\n\n") { content.removeLast() }
-        if !content.hasSuffix("\n") && !content.isEmpty { content += "\n" }
-        
+
         do {
             try writeConfiguration(content)
             configurationRevision += 1
@@ -562,6 +542,17 @@ class DiskManager: ObservableObject {
             return false
         }
     }
+    /// UUID formatting is flexible; the target after the separator retains its actual path bytes.
+    private func configurationEntry(_ rawLine: String) -> (uuid: String, mountPoint: String)? {
+        let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+        guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("#"),
+              let separator = line.firstIndex(of: ":") else { return nil }
+        let uuid = line[..<separator].trimmingCharacters(in: .whitespaces).uppercased()
+        guard isValidUUID(uuid) else { return nil }
+        let path = line[line.index(after: separator)...].drop(while: { $0 == " " || $0 == "\t" })
+        return (uuid, String(path))
+    }
+
     /// Stage content and permissions before atomically replacing the existing configuration.
     /// A failed write or permission change therefore cannot partially commit a save.
     private func writeConfiguration(_ content: String) throws {
