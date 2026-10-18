@@ -5,6 +5,7 @@ import SwiftUI
 struct DiskRow: View {
     let disk: DiskInfo
     let isLoading: Bool
+    let operationResult: VolumeOperationResult?
     let isBatchOperating: Bool
     let onMount: () -> Void
     let onUnmount: () -> Void
@@ -41,6 +42,10 @@ struct DiskRow: View {
                 }
                 Text("UUID: " + disk.uuid)
                     .font(.caption).foregroundColor(.secondary)
+                if let result = operationResult {
+                    Text("上次操作：" + result.message).font(.caption)
+                        .foregroundColor(result.success ? .green : .orange)
+                }
             }
             .frame(minWidth: 200, alignment: .leading)
             
