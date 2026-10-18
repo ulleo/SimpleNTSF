@@ -10,13 +10,18 @@ private let logger = Logger(subsystem: "com.simplentfs.app", category: "DiskMana
 class DiskManager: ObservableObject {
     @Published var disks: [DiskInfo] = []
     private let fileLock = NSLock()
-    private var isLoading = false
+    private var refreshCompletions: [() -> Void] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var refreshError: String?
+    private let configURL: URL?
+    private let queryDisk: ((DiskInfo) -> DiskInfo)?
     
     var addedUUIDs: Set<String> {
         Set(disks.map { $0.uuid })
     }
     
     private lazy var configPath: String = {
+        if let configURL = self.configURL { return configURL.path }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let configDir = "\(home)/\(Constants.configDirName)"
         let configPath = "\(configDir)/\(Constants.configFileName)"
@@ -51,8 +56,9 @@ class DiskManager: ObservableObject {
         return configPath
     }()
     
-    init() {
-        // 由 ContentView.onAppear 调用 loadConfig
+    init(configURL: URL? = nil, queryDisk: ((DiskInfo) -> DiskInfo)? = nil) {
+        self.configURL = configURL
+        self.queryDisk = queryDisk
     }
     
     // MARK: - Validation
@@ -97,46 +103,38 @@ class DiskManager: ObservableObject {
     // MARK: - Config Operations
     
     func loadConfig(completion: (() -> Void)? = nil) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.loadConfig(completion: completion) }
+            return
+        }
+        if let completion = completion { refreshCompletions.append(completion) }
         guard !isLoading else {
-            logger.debug("已有加载任务进行中，跳过")
-            completion?()
+            logger.debug("已有加载任务进行中，合并完成通知")
             return
         }
         isLoading = true
+        refreshError = nil
         
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
-            
-            defer {
-                DispatchQueue.main.async {
-                    self.isLoading = false
-                    completion?()
-                }
-            }
             
             self.fileLock.lock()
             defer { self.fileLock.unlock() }
             
             var newDisks: [DiskInfo] = []
             
-            guard FileManager.default.fileExists(atPath: self.configPath) else {
-                logger.warning("配置文件不存在：\(self.configPath)")
+            let content: String
+            do {
+                content = try String(contentsOfFile: self.configPath, encoding: .utf8)
+            } catch {
+                logger.error("配置文件无法读取：\(error.localizedDescription)")
+                self.finishRefresh(error: "无法读取挂载配置：\(error.localizedDescription)")
                 return
             }
-            
-            guard let content = try? String(contentsOfFile: self.configPath, encoding: .utf8) else {
-                logger.warning("配置文件无法读取")
-                return
-            }
-            
+
             let lines = content.components(separatedBy: "\n")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-            
-            guard !lines.isEmpty else {
-                logger.info("配置文件为空")
-                return
-            }
             
             logger.info("配置文件有 \(lines.count) 行有效配置")
             
@@ -170,15 +168,29 @@ class DiskManager: ObservableObject {
                 }
             }
             
-            self.refreshAllDiskInfoWithCompletion(disks: newDisks)
+            self.refreshAllDiskInfoWithCompletion(disks: newDisks) {
+                self.finishRefresh()
+            }
         }
     }
     
+    private func finishRefresh(error: String? = nil) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.finishRefresh(error: error) }
+            return
+        }
+        refreshError = error
+        isLoading = false
+        let completions = refreshCompletions
+        refreshCompletions.removeAll()
+        completions.forEach { $0() }
+    }
+
     func refreshAllDiskInfo() {
         refreshAllDiskInfoWithCompletion(disks: self.disks)
     }
     
-    func refreshAllDiskInfoWithCompletion(disks: [DiskInfo]) {
+    func refreshAllDiskInfoWithCompletion(disks: [DiskInfo], completion: (() -> Void)? = nil) {
         let dispatchGroup = DispatchGroup()
         let infoLock = NSLock()
         var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?, isTimeout: Bool, fileSystemType: String?)] = [:]
@@ -188,6 +200,14 @@ class DiskManager: ObservableObject {
         for disk in disks {
             dispatchGroup.enter()
             DispatchQueue.global().async {
+                if let queryDisk = self.queryDisk {
+                    let result = queryDisk(disk)
+                    infoLock.lock()
+                    updatedInfo[disk.uuid] = (result.device, result.volumeName, result.isMounted, result.currentMount, result.usage, result.isTimeout, result.fileSystemType)
+                    infoLock.unlock()
+                    dispatchGroup.leave()
+                    return
+                }
                 var isTimeout = false
                 let device = self.runDiskUtilCommand(withTimeout: 3.0, uuid: disk.uuid, searchPattern: "Device Identifier:") {
                     isTimeout = true
@@ -230,6 +250,7 @@ class DiskManager: ObservableObject {
             }
             
             self.disks = newDisks
+            completion?()
         }
     }
     

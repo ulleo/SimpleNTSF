@@ -7,7 +7,7 @@ private let logger = Logger(subsystem: "com.simplentfs.app", category: "ContentV
 
 struct ContentView: View {
     @StateObject private var manager = DiskManager()
-    @State private var isRefreshing = false
+    private var isRefreshing: Bool { manager.isLoading }
     @State private var showingAddDialog = false
     @State private var newUUID = ""
     @State private var newMountPoint = ""
@@ -117,6 +117,14 @@ struct ContentView: View {
             
             Divider()
             
+            if let error = manager.refreshError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.horizontal)
+                    .accessibilityLabel("刷新失败：" + error)
+            }
+
             // Disk list
             ScrollView {
                 VStack(spacing: 8) {
@@ -394,13 +402,7 @@ struct ContentView: View {
     
     /// 带 loading 状态的刷新（单次加载，完成后回调）
     func refreshWithCompletion(completion: (() -> Void)? = nil) {
-        isRefreshing = true
-        manager.loadConfig {
-            DispatchQueue.main.async {
-                self.isRefreshing = false
-                completion?()
-            }
-        }
+        manager.loadConfig(completion: completion)
     }
     
     func configureSudoers() {
