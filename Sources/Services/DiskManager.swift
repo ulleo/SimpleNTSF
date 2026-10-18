@@ -132,7 +132,7 @@ class DiskManager: ObservableObject {
             
             var newDisks: [DiskInfo] = []
             var seenUUIDs: Set<String> = []
-            
+
             let content: String
             do {
                 content = try String(contentsOfFile: self.configPath, encoding: .utf8)
