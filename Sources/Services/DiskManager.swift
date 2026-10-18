@@ -16,7 +16,7 @@ class DiskManager: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var refreshError: String?
     private let configURL: URL?
-    private let queryDisk: ((DiskInfo) -> DiskInfo)?
+    private let queryDisk: ((DiskInfo) throws -> DiskInfo)?
     
     var addedUUIDs: Set<String> {
         Set(disks.map { $0.uuid })
@@ -58,7 +58,7 @@ class DiskManager: ObservableObject {
         return configPath
     }()
     
-    init(configURL: URL? = nil, queryDisk: ((DiskInfo) -> DiskInfo)? = nil) {
+    init(configURL: URL? = nil, queryDisk: ((DiskInfo) throws -> DiskInfo)? = nil) {
         self.configURL = configURL
         self.queryDisk = queryDisk
     }
@@ -147,12 +147,14 @@ class DiskManager: ObservableObject {
                     
                     let newDisk = DiskInfo(
                         uuid: uuid,
-                        volumeName: "查询中…",
+                        volumeName: "",
                         mountPoint: normalizedMountPoint,
-                        device: "查询中…",
-                        currentMount: "查询中…",
+                        device: "",
+                        currentMount: "",
                         isMounted: false,
-                        usage: nil
+                        usage: nil,
+                        queryState: .unconfirmed(reason: "尚未查询"),
+                        hasConfirmedInformation: false
                     )
                     newDisks.append(newDisk)
                 }
@@ -174,7 +176,16 @@ class DiskManager: ObservableObject {
             beginRefresh()
             return
         }
-        if let disks = disks { self.disks = disks }
+        if let disks = disks {
+            self.disks = disks.map { disk in
+                guard !disk.isStateConfirmed,
+                      var previous = self.disks.first(where: { $0.uuid == disk.uuid && $0.hasConfirmedInformation }) else { return disk }
+                previous.mountPoint = disk.mountPoint
+                previous.queryState = disk.queryState
+                previous.isTimeout = disk.isTimeout
+                return previous
+            }
+        }
         refreshError = error
         isLoading = false
         let completions = refreshCompletions
@@ -183,68 +194,69 @@ class DiskManager: ObservableObject {
     }
 
     private func queryDiskInfo(disks: [DiskInfo], completion: @escaping ([DiskInfo]) -> Void) {
-        let dispatchGroup = DispatchGroup()
-        let infoLock = NSLock()
-        var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?, isTimeout: Bool, fileSystemType: String?)] = [:]
-        
-        logger.info("开始刷新 \(disks.count) 个硬盘的设备信息")
-        
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var results: [String: Result<DiskInfo, VolumeQueryFailure>] = [:]
         for disk in disks {
-            dispatchGroup.enter()
+            group.enter()
             DispatchQueue.global().async {
-                if let queryDisk = self.queryDisk {
-                    let result = queryDisk(disk)
-                    infoLock.lock()
-                    updatedInfo[disk.uuid] = (result.device, result.volumeName, result.isMounted, result.currentMount, result.usage, result.isTimeout, result.fileSystemType)
-                    infoLock.unlock()
-                    dispatchGroup.leave()
-                    return
+                let result: Result<DiskInfo, VolumeQueryFailure>
+                do {
+                    var queried = try self.queryDisk?(disk) ?? self.queryCurrentDisk(disk)
+                    if queried.isTimeout { throw VolumeQueryFailure.timedOut }
+                    queried.uuid = disk.uuid
+                    queried.mountPoint = disk.mountPoint
+                    queried.queryState = .confirmed
+                    queried.hasConfirmedInformation = true
+                    result = .success(queried)
+                } catch let failure as VolumeQueryFailure {
+                    result = .failure(failure)
+                } catch {
+                    result = .failure(.failed(error.localizedDescription))
                 }
-                var isTimeout = false
-                let device = self.runDiskUtilCommand(withTimeout: 3.0, uuid: disk.uuid, searchPattern: "Device Identifier:") {
-                    isTimeout = true
-                } ?? "未找到"
-                let volumeName = self.runDiskUtilCommand(withTimeout: 3.0, uuid: disk.uuid, searchPattern: "Volume Name:") {
-                    isTimeout = true
-                } ?? "未知"
-                let fileSystemType = self.getFileSystemType(uuid: disk.uuid)
-                let actualMount = self.getActualMountPoint(device: device)
-                let isMounted = actualMount != nil
-                
-                var usage: String? = nil
-                if isMounted, let mount = actualMount {
-                    usage = self.getDiskUsage(mountPoint: mount)
-                }
-                
-                infoLock.lock()
-                updatedInfo[disk.uuid] = (device, volumeName, isMounted, actualMount ?? "-", usage, isTimeout, fileSystemType)
-                infoLock.unlock()
-                dispatchGroup.leave()
+                lock.lock()
+                results[disk.uuid] = result
+                lock.unlock()
+                group.leave()
             }
         }
-        
-        dispatchGroup.notify(queue: .main) {
-            let newDisks = disks.map { oldDisk -> DiskInfo in
-                if let info = updatedInfo[oldDisk.uuid] {
-                    return DiskInfo(
-                        uuid: oldDisk.uuid,
-                        volumeName: info.volumeName,
-                        mountPoint: oldDisk.mountPoint,
-                        device: info.device,
-                        currentMount: info.currentMount,
-                        isMounted: info.isMounted,
-                        usage: info.usage,
-                        isTimeout: info.isTimeout,
-                        fileSystemType: info.fileSystemType
-                    )
+        group.notify(queue: .main) {
+            completion(disks.map { disk in
+                switch results[disk.uuid] {
+                case .success(let queried): return queried
+                case .failure(let failure):
+                    var unknown = disk
+                    unknown.queryState = .unconfirmed(reason: failure.message)
+                    unknown.isTimeout = failure == .timedOut
+                    return unknown
+                case nil: return disk
                 }
-                return oldDisk
-            }
-            
-            completion(newDisks)
+            })
         }
     }
-    
+
+    private func queryCurrentDisk(_ disk: DiskInfo) throws -> DiskInfo {
+        var timedOut = false
+        let device = runDiskUtilCommand(withTimeout: 3, uuid: disk.uuid, searchPattern: "Device Identifier:") { timedOut = true }
+        let name = runDiskUtilCommand(withTimeout: 3, uuid: disk.uuid, searchPattern: "Volume Name:") { timedOut = true }
+        let type = runDiskUtilCommand(withTimeout: 3, uuid: disk.uuid, searchPattern: "File System Personality:") { timedOut = true }
+        if timedOut { throw VolumeQueryFailure.timedOut }
+        guard let device = device, isValidDeviceName(device), let name = name, let type = type else {
+            throw VolumeQueryFailure.failed("无法读取卷信息，请刷新重试")
+        }
+        var mountFailure: VolumeQueryFailure?
+        let mount = runMountCommand(withTimeout: 2, device: device) { mountFailure = $0 }
+        if let failure = mountFailure { throw failure }
+        var result = disk
+        result.device = device
+        result.volumeName = name
+        result.fileSystemType = type
+        result.isMounted = mount != nil
+        result.currentMount = mount ?? ""
+        result.usage = mount.flatMap { getDiskUsage(mountPoint: $0) }
+        return result
+    }
+
     func findDevice(byUUID uuid: String) -> String {
         return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Device Identifier:") ?? "未找到"
     }
@@ -283,6 +295,7 @@ class DiskManager: ObservableObject {
                 return nil
             }
             
+            guard task.terminationStatus == 0 else { return nil }
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             
@@ -304,7 +317,7 @@ class DiskManager: ObservableObject {
         return runMountCommand(withTimeout: 2.0, device: device)
     }
     
-    func runMountCommand(withTimeout timeout: TimeInterval, device: String) -> String? {
+    func runMountCommand(withTimeout timeout: TimeInterval, device: String, onFailure: (VolumeQueryFailure) -> Void = { _ in }) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/sbin/mount")
         let pipe = Pipe()
@@ -325,21 +338,34 @@ class DiskManager: ObservableObject {
                     task.interrupt()
                     logger.warning("mount 命令超时后强制终止 (\(timeout) 秒)，device=\(device)")
                 }
+                onFailure(.timedOut)
                 return nil
             }
-            
+            guard task.terminationStatus == 0 else {
+                onFailure(.failed("无法读取挂载状态，请刷新重试"))
+                return nil
+            }
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            
-            for line in output.components(separatedBy: "\n") {
+            guard let output = String(data: data, encoding: .utf8), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                onFailure(.failed("无法解析挂载状态，请刷新重试"))
+                return nil
+            }
+            for line in output.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
+                guard line.contains(" on "), line.contains(" (") else {
+                    onFailure(.failed("无法解析挂载状态，请刷新重试"))
+                    return nil
+                }
                 if line.contains("/dev/\(device) ") {
                     let parts = line.components(separatedBy: " on ")
-                    if parts.count >= 2 {
-                        return parts[1].split(separator: " ").first.map(String.init)
+                    if parts.count >= 2, let attributes = parts[1].range(of: " (", options: .backwards) {
+                        return String(parts[1][..<attributes.lowerBound])
                     }
+                    onFailure(.failed("无法解析挂载点，请刷新重试"))
+                    return nil
                 }
             }
         } catch {
+            onFailure(.failed("无法读取挂载状态：" + error.localizedDescription))
             logger.error("获取实际挂载点失败：\(error.localizedDescription)")
         }
         return nil
@@ -393,7 +419,17 @@ class DiskManager: ObservableObject {
         return nil
     }
     
+    private func isVolumeStateConfirmed(uuid: String) -> Bool {
+        if !Thread.isMainThread {
+            return DispatchQueue.main.sync { self.isVolumeStateConfirmed(uuid: uuid) }
+        }
+        return disks.first(where: { $0.uuid == uuid })?.isStateConfirmed == true
+    }
+
     func mountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+        guard isVolumeStateConfirmed(uuid: uuid) else {
+            return (false, "卷状态未确认，请刷新后重试")
+        }
         let resolvedMountPoint: String
         do { resolvedMountPoint = try MountPoint.normalize(mountPoint) }
         catch { return (false, error.localizedDescription) }
@@ -493,6 +529,9 @@ class DiskManager: ObservableObject {
     }
     
     func unmountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
+        guard isVolumeStateConfirmed(uuid: uuid) else {
+            return (false, "卷状态未确认，请刷新后重试")
+        }
         let device = findDevice(byUUID: uuid)
         guard device != "未找到" else { return (false, "未找到设备") }
         
@@ -583,8 +622,9 @@ class DiskManager: ObservableObject {
         do {
             try writeConfiguration(content)
             configurationRevision += 1
-            disks.append(DiskInfo(uuid: uuid, volumeName: "查询中…", mountPoint: resolvedMountPoint,
-                                  device: "查询中…", currentMount: "查询中…", isMounted: false))
+            disks.append(DiskInfo(uuid: uuid, volumeName: "", mountPoint: resolvedMountPoint,
+                                  device: "", currentMount: "", isMounted: false,
+                                  queryState: .unconfirmed(reason: "尚未查询"), hasConfirmedInformation: false))
             loadConfig()
             logger.info("添加硬盘配置：\(uuid) -> \(resolvedMountPoint)")
             return (true, "")

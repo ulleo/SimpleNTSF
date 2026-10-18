@@ -24,14 +24,12 @@ struct EditMountPointSheet: View {
                     Divider()
                     VStack(alignment: .leading, spacing: 6) {
                         Text("当前状态：").font(.caption).foregroundColor(.secondary)
-                        if disk.device == "查询中…" {
-                            Text("⏳ 查询中…")
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundColor(disk.isMounted ? .green : .orange)
+                        Text(disk.statusMessage)
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(disk.isStateConfirmed && disk.isMounted ? .green : .orange)
+                        if !disk.isStateConfirmed {
+                            Text(disk.hasConfirmedInformation ? "上次信息仅供参考，请刷新确认" : "暂无已确认的卷信息")
+                                .font(.caption).foregroundColor(.secondary)
                         }
                     }
                     VStack(alignment: .leading, spacing: 6) {

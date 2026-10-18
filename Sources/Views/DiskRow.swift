@@ -29,21 +29,15 @@ struct DiskRow: View {
             // 左侧：设备信息
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text(disk.device)
+                    Text(disk.device.isEmpty ? "设备待确认" : disk.device)
                         .font(.system(.body, design: .monospaced))
-                    Text(disk.volumeName)
+                    Text(disk.volumeName.isEmpty ? "卷信息待确认" : disk.volumeName)
                         .font(.system(.body, design: .monospaced))
                         .foregroundColor(.blue)
-                    if disk.isTimeout {
-                        Text("⚠️ 获取超时")
-                            .font(.caption).foregroundColor(.red)
-                    } else if disk.device == "查询中…" {
-                        Text("⏳ 查询中…")
-                            .font(.caption).foregroundColor(.secondary)
-                    } else {
-                        Text(disk.isMounted ? "✅ 已挂载" : "⭕ 未挂载")
-                            .font(.caption).foregroundColor(disk.isMounted ? .green : .orange)
-                    }
+                    Text(disk.statusMessage)
+                        .font(.caption)
+                        .foregroundColor(disk.isStateConfirmed && disk.isMounted ? .green : .orange)
+
                 }
                 Text("UUID: " + disk.uuid)
                     .font(.caption).foregroundColor(.secondary)
@@ -52,12 +46,20 @@ struct DiskRow: View {
             
             // 中间：挂载信息
             VStack(alignment: .leading, spacing: 4) {
-                if disk.currentMount == "查询中…" {
-                    Text("当前：-")
-                        .font(.system(.body, design: .monospaced)).foregroundColor(.gray)
-                } else {
-                    Text("当前：" + disk.currentMount)
+                if disk.isStateConfirmed {
+                    Text("当前：" + (disk.currentMount.isEmpty ? "未挂载" : disk.currentMount))
                         .font(.system(.body, design: .monospaced))
+                } else if disk.hasConfirmedInformation {
+                    Text("上次挂载点：" + (disk.currentMount.isEmpty ? "无" : disk.currentMount))
+                        .font(.system(.body, design: .monospaced)).foregroundColor(.secondary)
+                    Text("上次信息仅供参考，请刷新确认")
+                        .font(.caption).foregroundColor(.orange)
+                } else {
+                    Text("暂无已确认的卷信息")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                if let reason = disk.queryFailureMessage {
+                    Text(reason).font(.caption).foregroundColor(.orange)
                 }
                 Text("目标：" + disk.mountPoint)
                     .font(.caption).foregroundColor(.secondary)
@@ -66,17 +68,11 @@ struct DiskRow: View {
                         .font(.caption).foregroundColor(.purple)
                 }
                 if let usage = disk.usage {
-                    Text("用量：" + usage)
+                    Text((disk.isStateConfirmed ? "用量：" : "上次用量：") + usage)
                         .font(.caption).foregroundColor(.blue)
-                } else if disk.device == "查询中…" {
-                    Text("用量：-")
-                        .font(.caption).foregroundColor(.gray)
-                } else if disk.isMounted {
-                    Text("用量：获取中…")
-                        .font(.caption).foregroundColor(.secondary)
                 } else {
-                    Text("用量：-")
-                        .font(.caption).foregroundColor(.gray)
+                    Text("用量：-").font(.caption).foregroundColor(.gray)
+
                 }
             }
             .frame(minWidth: 180, alignment: .leading)
@@ -97,7 +93,7 @@ struct DiskRow: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.green)
-                .disabled(isDisabled || disk.isMounted)
+                .disabled(isDisabled || !disk.canMount)
                 .help("挂载")
                 
                 // 卸载按钮
@@ -112,7 +108,7 @@ struct DiskRow: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.orange)
-                .disabled(isDisabled || !disk.isMounted)
+                .disabled(isDisabled || !disk.canUnmount)
                 .help("卸载")
                 
                 // 重新挂载按钮
@@ -155,7 +151,7 @@ struct DiskRow: View {
                 .stroke(Color.gray.opacity(0.3), lineWidth: 1)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(disk.isMounted ? Color.green.opacity(0.05) : Color.clear)
+                        .fill(disk.isStateConfirmed && disk.isMounted ? Color.green.opacity(0.05) : Color.clear)
                 )
         )
         .opacity(isDisabled ? 0.6 : 1.0)

@@ -228,8 +228,9 @@ struct ContentView: View {
                 
                 Button(action: {
                     isBatchOperating = true
+                    let targets = manager.disks.filter { $0.isStateConfirmed }
                     DispatchQueue.global().async {
-                        for disk in manager.disks {
+                        for disk in targets {
                             _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
                         self.refreshWithCompletion {
@@ -253,8 +254,9 @@ struct ContentView: View {
                 
                 Button(action: {
                     isBatchOperating = true
+                    let targets = manager.disks.filter { $0.isStateConfirmed }
                     DispatchQueue.global().async {
-                        for disk in manager.disks {
+                        for disk in targets {
                             _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
                         }
                         self.refreshWithCompletion {

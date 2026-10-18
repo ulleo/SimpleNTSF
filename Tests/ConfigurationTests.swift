@@ -30,7 +30,7 @@ struct ConfigurationTests {
             result.isMounted = true
             result.usage = "1 GB / 2 GB"
             result.fileSystemType = "NTFS"
-            result.isTimeout = true
+            result.isTimeout = false
             return result
         })
         var loaded = false
