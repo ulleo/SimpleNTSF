@@ -21,6 +21,7 @@ class DiskManager: ObservableObject {
     @Published private(set) var refreshError: String?
     private let configURL: URL?
     private let queryDisk: ((DiskInfo) throws -> DiskInfo)?
+    private let executeCommand: CommandExecuting
     
     var addedUUIDs: Set<String> {
         Set(disks.map { $0.uuid })
@@ -63,10 +64,12 @@ class DiskManager: ObservableObject {
     }()
     
     init(configURL: URL? = nil, queryDisk: ((DiskInfo) throws -> DiskInfo)? = nil,
-         executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))? = nil) {
+         executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))? = nil,
+         executeCommand: CommandExecuting? = nil) {
         self.configURL = configURL
         self.queryDisk = queryDisk
         self.executeOperation = executeOperation
+        self.executeCommand = executeCommand ?? { CommandRunner().run(executable: $0, arguments: $1, timeout: $2) }
     }
     
     // MARK: - Validation
@@ -247,189 +250,85 @@ class DiskManager: ObservableObject {
     }
 
     private func queryCurrentDisk(_ disk: DiskInfo) throws -> DiskInfo {
-        var timedOut = false
-        let device = runDiskUtilCommand(withTimeout: 3, uuid: disk.uuid, searchPattern: "Device Identifier:") { timedOut = true }
-        let name = runDiskUtilCommand(withTimeout: 3, uuid: disk.uuid, searchPattern: "Volume Name:") { timedOut = true }
-        let type = runDiskUtilCommand(withTimeout: 3, uuid: disk.uuid, searchPattern: "File System Personality:") { timedOut = true }
-        if timedOut { throw VolumeQueryFailure.timedOut }
+        let device = try diskUtilField(uuid: disk.uuid, name: "Device Identifier:")
+        let name = try diskUtilField(uuid: disk.uuid, name: "Volume Name:")
+        let type = try diskUtilField(uuid: disk.uuid, name: "File System Personality:")
         guard let device = device, isValidDeviceName(device), let name = name, let type = type else {
             throw VolumeQueryFailure.failed("无法读取卷信息，请刷新重试")
         }
-        var mountFailure: VolumeQueryFailure?
-        let mount = runMountCommand(withTimeout: 2, device: device) { mountFailure = $0 }
-        if let failure = mountFailure { throw failure }
+        let mount = try currentMount(device: device)
         var result = disk
         result.device = device
         result.volumeName = name
         result.fileSystemType = type
         result.isMounted = mount != nil
         result.currentMount = mount ?? ""
-        result.usage = mount.flatMap { getDiskUsage(mountPoint: $0) }
+        result.usage = try mount.map { try diskUsage(mountPoint: $0) }
         return result
     }
 
+    private func commandOutput(executable: String, arguments: [String], timeout: TimeInterval) throws -> String {
+        let result = executeCommand(executable, arguments, timeout)
+        guard result.success else {
+            if result.outcome == .timedOut { throw VolumeQueryFailure.timedOut }
+            throw VolumeQueryFailure.failed(result.message)
+        }
+        guard let output = String(data: result.stdout, encoding: .utf8) else {
+            throw VolumeQueryFailure.failed("无法解析命令输出，请刷新重试")
+        }
+        return output
+    }
+
+    private func diskUtilField(uuid: String, name: String) throws -> String? {
+        let output = try commandOutput(executable: Constants.diskUtilPath, arguments: ["info", uuid], timeout: 3)
+        for line in output.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(name) {
+                return String(trimmed.dropFirst(name.count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    // Existing operation command selection keeps its behavior until the operation migration.
     func findDevice(byUUID uuid: String) -> String {
-        return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Device Identifier:") ?? "未找到"
+        return (try? diskUtilField(uuid: uuid, name: "Device Identifier:")) ?? "未找到"
     }
-    
-    func getVolumeName(byUUID uuid: String) -> String {
-        return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "Volume Name:") ?? "未知"
-    }
-    
+
     func getFileSystemType(uuid: String) -> String? {
-        return runDiskUtilCommand(withTimeout: 3.0, uuid: uuid, searchPattern: "File System Personality:")
+        return try? diskUtilField(uuid: uuid, name: "File System Personality:")
     }
-    
-    func runDiskUtilCommand(withTimeout timeout: TimeInterval, uuid: String, searchPattern: String, onTimeout: (() -> Void)? = nil) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: Constants.diskUtilPath)
-        task.arguments = ["info", uuid]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
-        
-        do {
-            try task.run()
-            
-            let result = semaphore.wait(timeout: .now() + timeout)
-            
-            if result == .timedOut {
-                task.terminate()
-                Thread.sleep(forTimeInterval: 0.5)
-                if task.isRunning {
-                    task.interrupt()
-                    logger.warning("diskutil 命令超时后强制终止 (\(timeout) 秒)，uuid=\(uuid.prefix(8))...")
-                }
-                onTimeout?()
-                return nil
+
+    private func currentMount(device: String) throws -> String? {
+        let output = try commandOutput(executable: "/sbin/mount", arguments: [], timeout: 2)
+        guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw VolumeQueryFailure.failed("无法解析挂载状态，请刷新重试")
+        }
+        for line in output.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
+            guard line.contains(" on "), line.contains(" (") else {
+                throw VolumeQueryFailure.failed("无法解析挂载状态，请刷新重试")
             }
-            
-            guard task.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            
-            for line in output.components(separatedBy: "\n") {
-                if line.contains(searchPattern) {
-                    let parts = line.split(separator: ":")
-                    if parts.count == 2 {
-                        return String(parts[1]).trimmingCharacters(in: .whitespaces)
-                    }
+            if line.hasPrefix("/dev/\(device) on ") {
+                let pathAndAttributes = line.dropFirst("/dev/\(device) on ".count)
+                guard let attributes = pathAndAttributes.range(of: " (", options: .backwards) else {
+                    throw VolumeQueryFailure.failed("无法解析挂载点，请刷新重试")
                 }
+                return String(pathAndAttributes[..<attributes.lowerBound])
             }
-        } catch {
-            logger.error("diskutil 命令失败：\(error.localizedDescription)")
         }
         return nil
     }
-    
-    func getActualMountPoint(device: String) -> String? {
-        return runMountCommand(withTimeout: 2.0, device: device)
-    }
-    
-    func runMountCommand(withTimeout timeout: TimeInterval, device: String, onFailure: (VolumeQueryFailure) -> Void = { _ in }) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/sbin/mount")
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
-        
-        do {
-            try task.run()
-            
-            let result = semaphore.wait(timeout: .now() + timeout)
-            
-            if result == .timedOut {
-                task.terminate()
-                Thread.sleep(forTimeInterval: 0.5)
-                if task.isRunning {
-                    task.interrupt()
-                    logger.warning("mount 命令超时后强制终止 (\(timeout) 秒)，device=\(device)")
-                }
-                onFailure(.timedOut)
-                return nil
-            }
-            guard task.terminationStatus == 0 else {
-                onFailure(.failed("无法读取挂载状态，请刷新重试"))
-                return nil
-            }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                onFailure(.failed("无法解析挂载状态，请刷新重试"))
-                return nil
-            }
-            for line in output.components(separatedBy: "\n").filter({ !$0.isEmpty }) {
-                guard line.contains(" on "), line.contains(" (") else {
-                    onFailure(.failed("无法解析挂载状态，请刷新重试"))
-                    return nil
-                }
-                if line.contains("/dev/\(device) ") {
-                    let parts = line.components(separatedBy: " on ")
-                    if parts.count >= 2, let attributes = parts[1].range(of: " (", options: .backwards) {
-                        return String(parts[1][..<attributes.lowerBound])
-                    }
-                    onFailure(.failed("无法解析挂载点，请刷新重试"))
-                    return nil
-                }
-            }
-        } catch {
-            onFailure(.failed("无法读取挂载状态：" + error.localizedDescription))
-            logger.error("获取实际挂载点失败：\(error.localizedDescription)")
+
+    private func diskUsage(mountPoint: String) throws -> String {
+        let output = try commandOutput(executable: "/bin/df", arguments: ["-h", mountPoint], timeout: 2)
+        let lines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
+        if lines.count >= 2 {
+            let parts = lines[1].split(whereSeparator: { $0.isWhitespace })
+            if parts.count >= 5 { return "\(parts[2]) / \(parts[1]) (\(parts[4]))" }
         }
-        return nil
+        throw VolumeQueryFailure.failed("无法解析卷用量，请刷新重试")
     }
-    
-    func getDiskUsage(mountPoint: String) -> String? {
-        return runDfCommand(withTimeout: 2.0, mountPoint: mountPoint)
-    }
-    
-    func runDfCommand(withTimeout timeout: TimeInterval, mountPoint: String) -> String? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/df")
-        task.arguments = ["-h", mountPoint]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
-        
-        do {
-            try task.run()
-            
-            let result = semaphore.wait(timeout: .now() + timeout)
-            
-            if result == .timedOut {
-                task.terminate()
-                Thread.sleep(forTimeInterval: 0.5)
-                if task.isRunning {
-                    task.interrupt()
-                    logger.warning("df 命令超时后强制终止 (\(timeout) 秒)，mountPoint=\(mountPoint)")
-                }
-                return nil
-            }
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            
-            let lines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
-            if lines.count >= 2 {
-                let parts = lines[1].components(separatedBy: " ").filter { !$0.isEmpty }
-                if parts.count >= 5 {
-                    let used = parts[2]
-                    let total = parts[1]
-                    let capacity = parts[4]
-                    return "\(used) / \(total) (\(capacity))"
-                }
-            }
-        } catch {
-            logger.error("获取磁盘使用量失败：\(error.localizedDescription)")
-        }
-        return nil
-    }
-    
+
     /// The operation remains busy until its actual volume state has been queried and published.
     func performOperation(uuid: String, operation: VolumeOperation,
                           completion: @escaping (VolumeOperationResult) -> Void = { _ in }) {
