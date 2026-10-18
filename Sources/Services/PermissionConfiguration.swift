@@ -18,6 +18,20 @@ enum PermissionConfiguration {
         }
     }
 
+    enum GenerationError: LocalizedError {
+        case unsupportedUsername
+        var errorDescription: String? { "当前用户名不适用于权限配置；未修改用户名或请求授权" }
+    }
+
+    /// Kept beside the status checker so capability rules can share one source of truth.
+    static func generatedContent(username: String) throws -> String {
+        guard !username.isEmpty,
+              username.range(of: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$", options: .regularExpression) != nil else {
+            throw GenerationError.unsupportedUsername
+        }
+        return "\(username) ALL=(ALL) NOPASSWD: NOEXEC: \(Constants.mountNTFSPath), /sbin/mount, \(Constants.diskUtilPath)\n"
+    }
+
     static func status(fileURL: URL = URL(fileURLWithPath: Constants.sudoersFilePath)) -> Status {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return .missing }
         guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return .unreadable }
