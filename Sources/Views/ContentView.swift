@@ -26,11 +26,10 @@ struct ContentView: View {
     @State private var showingAlert = false
     @State private var permissionStatus: PermissionConfiguration.Status = .missing
     private var isPasswordFree: Bool { permissionStatus == .configured }
-    @State private var loadingStates: [String: Bool] = [:]
     @State private var isBatchOperating = false
     
     private var hasLoading: Bool {
-        loadingStates.values.contains(true)
+        !manager.operatingUUIDs.isEmpty
     }
     
     var body: some View {
@@ -131,26 +130,12 @@ struct ContentView: View {
                     ForEach(manager.disks, id: \.uuid) { disk in
                         DiskRow(
                             disk: disk,
-                            isLoading: loadingStates[disk.uuid] ?? false,
+                            isLoading: manager.operatingUUIDs.contains(disk.uuid),
+                            operationResult: manager.operationResults[disk.uuid],
                             isBatchOperating: isBatchOperating,
                             onMount: {
                                 guard !isBatchOperating else { return }
-                                DispatchQueue.main.async {
-                                    loadingStates[disk.uuid] = true
-                                }
-                                DispatchQueue.global().async {
-                                    let result = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
-                                    DispatchQueue.main.async {
-                                        loadingStates.removeValue(forKey: disk.uuid)
-                                        if result.success {
-                                            self.refreshWithCompletion()
-                                        } else {
-                                            alertMessage = result.message
-                                            alertIsError = true
-                                            showingAlert = true
-                                        }
-                                    }
-                                }
+                                operate(uuid: disk.uuid, operation: .mount)
                             },
                             onUnmount: {
                                 guard !isBatchOperating else { return }
@@ -163,13 +148,13 @@ struct ContentView: View {
                                 showingRemountConfirm = true
                             },
                             onEdit: {
-                                guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
+                                guard !isBatchOperating && !manager.operatingUUIDs.contains(disk.uuid) else { return }
                                 if let updatedDisk = manager.disks.first(where: { $0.uuid == disk.uuid }) {
                                     editingDisk = updatedDisk
                                 }
                             },
                             onDelete: {
-                                guard !isBatchOperating && (loadingStates[disk.uuid] ?? false) == false else { return }
+                                guard !isBatchOperating && !manager.operatingUUIDs.contains(disk.uuid) else { return }
                                 deletingDisk = disk
                                 showingDeleteConfirm = true
                             }
@@ -227,16 +212,7 @@ struct ContentView: View {
                 Spacer()
                 
                 Button(action: {
-                    isBatchOperating = true
-                    let targets = manager.disks.filter { $0.isStateConfirmed }
-                    DispatchQueue.global().async {
-                        for disk in targets {
-                            _ = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
-                        }
-                        self.refreshWithCompletion {
-                            isBatchOperating = false
-                        }
-                    }
+                    runBatch(operation: .mount)
                 }) {
                     HStack {
                         Label("全部挂载", systemImage: "externaldrive.fill")
@@ -253,16 +229,7 @@ struct ContentView: View {
                 .disabled(isBatchOperating || hasLoading)
                 
                 Button(action: {
-                    isBatchOperating = true
-                    let targets = manager.disks.filter { $0.isStateConfirmed }
-                    DispatchQueue.global().async {
-                        for disk in targets {
-                            _ = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
-                        }
-                        self.refreshWithCompletion {
-                            isBatchOperating = false
-                        }
-                    }
+                    runBatch(operation: .unmount)
                 }) {
                     HStack {
                         Label("全部卸载", systemImage: "eject.fill")
@@ -328,21 +295,8 @@ struct ContentView: View {
             Button("取消", role: .cancel) { unmountingDisk = nil }
             Button("卸载", role: .destructive) {
                 if let disk = unmountingDisk {
-                    loadingStates[disk.uuid] = true
-                    DispatchQueue.global().async {
-                        let result = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
-                        DispatchQueue.main.async {
-                            loadingStates.removeValue(forKey: disk.uuid)
-                            if result.success {
-                                self.refreshWithCompletion()
-                            } else {
-                                alertMessage = result.message
-                                alertIsError = true
-                                showingAlert = true
-                            }
-                            unmountingDisk = nil
-                        }
-                    }
+                    operate(uuid: disk.uuid, operation: .unmount)
+                    unmountingDisk = nil
                 }
             }
         } message: { Text("确定要卸载此硬盘吗？") }
@@ -350,32 +304,8 @@ struct ContentView: View {
             Button("取消", role: .cancel) { remountingDisk = nil }
             Button("重新挂载", role: .destructive) {
                 if let disk = remountingDisk {
-                    loadingStates[disk.uuid] = true
-                    DispatchQueue.global().async {
-                        let unmountResult = manager.unmountDisk(uuid: disk.uuid, mountPoint: disk.currentMount)
-                        guard unmountResult.success else {
-                            DispatchQueue.main.async {
-                                loadingStates.removeValue(forKey: disk.uuid)
-                                alertMessage = "卸载失败：" + unmountResult.message
-                                alertIsError = true
-                                showingAlert = true
-                                remountingDisk = nil
-                            }
-                            return
-                        }
-                        let mountResult = manager.mountDisk(uuid: disk.uuid, mountPoint: disk.mountPoint)
-                        DispatchQueue.main.async {
-                            loadingStates.removeValue(forKey: disk.uuid)
-                            if mountResult.success {
-                                self.refreshWithCompletion()
-                            } else {
-                                alertMessage = "挂载失败：" + mountResult.message
-                                alertIsError = true
-                                showingAlert = true
-                            }
-                            remountingDisk = nil
-                        }
-                    }
+                    operate(uuid: disk.uuid, operation: .remount)
+                    remountingDisk = nil
                 }
             }
         } message: { Text("将先卸载当前挂载，再挂载到目标位置：\n\n\(remountingDisk?.mountPoint ?? "")") }
@@ -385,6 +315,27 @@ struct ContentView: View {
         }
     }
     
+    private func operate(uuid: String, operation: VolumeOperation) {
+        manager.performOperation(uuid: uuid, operation: operation) { result in
+            if !result.success {
+                alertMessage = result.message
+                alertIsError = true
+                showingAlert = true
+            }
+        }
+    }
+
+    // Serial batch results will be centralized and summarized in the batch-operation ticket.
+    private func runBatch(operation: VolumeOperation) {
+        isBatchOperating = true
+        let targets = manager.disks.filter { operation == .mount ? $0.canMount : $0.canUnmount }
+        func next(_ index: Int) {
+            guard index < targets.count else { isBatchOperating = false; return }
+            manager.performOperation(uuid: targets[index].uuid, operation: operation) { _ in next(index + 1) }
+        }
+        next(0)
+    }
+
     func checkPasswordFreeStatus() {
         let status = PermissionConfiguration.status()
         DispatchQueue.main.async {
