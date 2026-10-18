@@ -24,7 +24,8 @@ struct ContentView: View {
     @State private var setupResult: String?
     @State private var setupSuccess = false
     @State private var showingAlert = false
-    @State private var isPasswordFree = false
+    @State private var permissionStatus: PermissionConfiguration.Status = .missing
+    private var isPasswordFree: Bool { permissionStatus == .configured }
     @State private var loadingStates: [String: Bool] = [:]
     @State private var isBatchOperating = false
     
@@ -90,7 +91,7 @@ struct ContentView: View {
                     } else {
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.circle.fill")
-                            Text("已配置权限")
+                            Text(permissionStatus.message)
                         }
                         .font(.caption)
                         .foregroundColor(.green)
@@ -101,6 +102,13 @@ struct ContentView: View {
                     }
                 }
                 
+                if !isPasswordFree {
+                    Text(permissionStatus.message)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                }
+
                 if let result = setupResult {
                     Text(result).font(.caption).foregroundColor(setupSuccess ? .green : .red)
                 }
@@ -386,21 +394,9 @@ struct ContentView: View {
     }
     
     func checkPasswordFreeStatus() {
-        let fm = FileManager.default
-        let sudoersPath = Constants.sudoersFilePath
-        
-        guard fm.fileExists(atPath: sudoersPath),
-              let content = try? String(contentsOfFile: sudoersPath, encoding: .utf8) else {
-            DispatchQueue.main.async { self.isPasswordFree = false }
-            return
-        }
-        
-        let hasMountNTFS = content.contains(Constants.mountNTFSPath)
-        let hasMount = content.contains("/sbin/mount")
-        let hasDiskUtil = content.contains(Constants.diskUtilPath)
-        
+        let status = PermissionConfiguration.status()
         DispatchQueue.main.async {
-            self.isPasswordFree = hasMountNTFS && hasMount && hasDiskUtil
+            self.permissionStatus = status
         }
     }
     
@@ -449,16 +445,18 @@ struct ContentView: View {
                 
                 DispatchQueue.main.async {
                     isConfiguring = false
-                    let fileExists = FileManager.default.fileExists(atPath: Constants.sudoersFilePath)
-                    
-                    if task.terminationStatus == 0 && fileExists {
+                    let status = PermissionConfiguration.status()
+                    permissionStatus = status
+
+                    if task.terminationStatus == 0 && status == .configured {
                         setupSuccess = true
                         setupResult = "✅ 配置成功！现在挂载/卸载无需密码。"
                         logger.info("Sudoers 配置成功")
-                        self.checkPasswordFreeStatus()
                     } else {
                         setupSuccess = false
-                        let displayError = errorMsg.isEmpty ? "配置失败（退出码：\(task.terminationStatus)）" : errorMsg
+                        let displayError = errorMsg.isEmpty
+                            ? (task.terminationStatus == 0 ? status.message : "配置失败（退出码：\(task.terminationStatus)）")
+                            : errorMsg
                         setupResult = "❌ 配置失败：" + displayError
                         logger.error("Sudoers 配置失败")
                     }
