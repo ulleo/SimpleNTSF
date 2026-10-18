@@ -8,9 +8,11 @@ private let logger = Logger(subsystem: "com.simplentfs.app", category: "DiskMana
 // MARK: - Disk Manager
 
 class DiskManager: ObservableObject {
-    @Published var disks: [DiskInfo] = []
+    @Published private(set) var disks: [DiskInfo] = []
     private let fileLock = NSLock()
     private var refreshCompletions: [() -> Void] = []
+    // Main-thread revision: a successful configuration write invalidates in-flight queries.
+    private var configurationRevision = 0
     @Published private(set) var isLoading = false
     @Published private(set) var refreshError: String?
     private let configURL: URL?
@@ -98,7 +100,12 @@ class DiskManager: ObservableObject {
         }
         isLoading = true
         refreshError = nil
-        
+        beginRefresh()
+    }
+
+    /// All visible state and revision decisions belong to the main thread.
+    private func beginRefresh() {
+        let revision = configurationRevision
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
             
@@ -112,7 +119,7 @@ class DiskManager: ObservableObject {
                 content = try String(contentsOfFile: self.configPath, encoding: .utf8)
             } catch {
                 logger.error("配置文件无法读取：\(error.localizedDescription)")
-                self.finishRefresh(error: "无法读取挂载配置：\(error.localizedDescription)")
+                self.finishRefresh(revision: revision, error: "无法读取挂载配置：\(error.localizedDescription)")
                 return
             }
 
@@ -151,17 +158,23 @@ class DiskManager: ObservableObject {
                 }
             }
             
-            self.refreshAllDiskInfoWithCompletion(disks: newDisks) {
-                self.finishRefresh()
+            self.queryDiskInfo(disks: newDisks) { queriedDisks in
+                self.finishRefresh(revision: revision, disks: queriedDisks)
             }
         }
     }
     
-    private func finishRefresh(error: String? = nil) {
+    private func finishRefresh(revision: Int, disks: [DiskInfo]? = nil, error: String? = nil) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.finishRefresh(error: error) }
+            DispatchQueue.main.async { self.finishRefresh(revision: revision, disks: disks, error: error) }
             return
         }
+        guard revision == configurationRevision else {
+            // Keep loading and all waiters until a result for the new configuration is published.
+            beginRefresh()
+            return
+        }
+        if let disks = disks { self.disks = disks }
         refreshError = error
         isLoading = false
         let completions = refreshCompletions
@@ -169,11 +182,7 @@ class DiskManager: ObservableObject {
         completions.forEach { $0() }
     }
 
-    func refreshAllDiskInfo() {
-        refreshAllDiskInfoWithCompletion(disks: self.disks)
-    }
-    
-    func refreshAllDiskInfoWithCompletion(disks: [DiskInfo], completion: (() -> Void)? = nil) {
+    private func queryDiskInfo(disks: [DiskInfo], completion: @escaping ([DiskInfo]) -> Void) {
         let dispatchGroup = DispatchGroup()
         let infoLock = NSLock()
         var updatedInfo: [String: (device: String, volumeName: String, isMounted: Bool, currentMount: String, usage: String?, isTimeout: Bool, fileSystemType: String?)] = [:]
@@ -232,8 +241,7 @@ class DiskManager: ObservableObject {
                 return oldDisk
             }
             
-            self.disks = newDisks
-            completion?()
+            completion(newDisks)
         }
     }
     
@@ -383,101 +391,6 @@ class DiskManager: ObservableObject {
             logger.error("获取磁盘使用量失败：\(error.localizedDescription)")
         }
         return nil
-    }
-    
-    func refreshDiskUsages() {
-        let disksSnapshot = self.disks
-        
-        guard !disksSnapshot.isEmpty else { return }
-        
-        DispatchQueue.global().async { [weak self] in
-            guard let self = self else { return }
-            
-            var updatedUsages: [String: String?] = [:]
-            let dispatchGroup = DispatchGroup()
-            let usageLock = NSLock()
-            
-            for disk in disksSnapshot {
-                if disk.isMounted {
-                    dispatchGroup.enter()
-                    DispatchQueue.global().async {
-                        let usage = self.getDiskUsage(mountPoint: disk.mountPoint)
-                        usageLock.lock()
-                        updatedUsages[disk.uuid] = usage
-                        usageLock.unlock()
-                        dispatchGroup.leave()
-                    }
-                }
-            }
-            
-            dispatchGroup.notify(queue: .main) {
-                var hasChanges = false
-                let newDisks = disksSnapshot.map { disk -> DiskInfo in
-                    if let usage = updatedUsages[disk.uuid] {
-                        if disk.usage != usage {
-                            hasChanges = true
-                        }
-                        return DiskInfo(
-                            uuid: disk.uuid,
-                            volumeName: disk.volumeName,
-                            mountPoint: disk.mountPoint,
-                            device: disk.device,
-                            currentMount: disk.currentMount,
-                            isMounted: disk.isMounted,
-                            usage: usage
-                        )
-                    } else if !disk.isMounted && disk.usage != nil {
-                        hasChanges = true
-                        return DiskInfo(
-                            uuid: disk.uuid,
-                            volumeName: disk.volumeName,
-                            mountPoint: disk.mountPoint,
-                            device: disk.device,
-                            currentMount: disk.currentMount,
-                            isMounted: disk.isMounted,
-                            usage: nil
-                        )
-                    }
-                    return disk
-                }
-                if hasChanges {
-                    self.disks = newDisks
-                }
-            }
-        }
-    }
-    
-    func updateDiskMountStatus(uuid: String, delaySeconds: Double = 0.5, refreshUsageAfterUpdate: Bool = true) {
-        DispatchQueue.global().asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
-            guard let self = self else { return }
-            
-            let device = self.findDevice(byUUID: uuid)
-            let volumeName = self.getVolumeName(byUUID: uuid)
-            let actualMount = self.getActualMountPoint(device: device)
-            let isMounted = actualMount != nil
-            let currentMount = actualMount ?? "-"
-            
-            DispatchQueue.main.async {
-                if let index = self.disks.firstIndex(where: { $0.uuid == uuid }) {
-                    let oldDisk = self.disks[index]
-                    if oldDisk.device != device || oldDisk.volumeName != volumeName || oldDisk.isMounted != isMounted || oldDisk.currentMount != currentMount {
-                        self.disks[index] = DiskInfo(
-                            uuid: uuid,
-                            volumeName: volumeName,
-                            mountPoint: oldDisk.mountPoint,
-                            device: device,
-                            currentMount: currentMount,
-                            isMounted: isMounted,
-                            usage: oldDisk.usage
-                        )
-                    }
-                    
-                    if refreshUsageAfterUpdate && isMounted {
-                        self.refreshDiskUsages()
-                    }
-                }
-            }
-        }
     }
     
     func mountDisk(uuid: String, mountPoint: String) -> (success: Bool, message: String) {
@@ -669,6 +582,7 @@ class DiskManager: ObservableObject {
         
         do {
             try writeConfiguration(content)
+            configurationRevision += 1
             disks.append(DiskInfo(uuid: uuid, volumeName: "查询中…", mountPoint: resolvedMountPoint,
                                   device: "查询中…", currentMount: "查询中…", isMounted: false))
             loadConfig()
@@ -706,6 +620,7 @@ class DiskManager: ObservableObject {
         
         do {
             try writeConfiguration(content)
+            configurationRevision += 1
             if let index = disks.firstIndex(where: { $0.uuid == uuid }) {
                 disks[index].mountPoint = resolvedMountPoint
             }
@@ -740,6 +655,7 @@ class DiskManager: ObservableObject {
         
         do {
             try writeConfiguration(content)
+            configurationRevision += 1
             disks.removeAll { $0.uuid == uuid }
             logger.info("删除硬盘配置：\(uuid)")
             return true
