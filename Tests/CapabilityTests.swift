@@ -42,7 +42,7 @@ struct CapabilityTests {
             if mode == 0 { return CommandResult(outcome: .exited(1), stderr: Data("sudo: a password is required".utf8)) }
             if mode == 1 { return CommandResult(outcome: .exited(1), stderr: Data("filesystem damaged".utf8)) }
             return CommandResult(outcome: .exited(0))
-        })
+        }, operationVerificationTimeout: 0)
         var loaded = false
         manager.loadConfig { loaded = true }
         wait { loaded }
@@ -65,6 +65,9 @@ struct CapabilityTests {
         mode = 2
         _ = mount()
         expect(manager.authorizationFailures.isEmpty, "successful execution of the same capability clears its runtime denial")
+        loaded = false
+        manager.loadConfig { loaded = true }
+        wait { loaded }
         let before = commands.count
         raw["APFSSnapshot"] = true
         let snapshot = mount()

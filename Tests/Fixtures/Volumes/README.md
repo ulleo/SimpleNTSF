@@ -1,3 +1,5 @@
-These plist fixtures are **synthetic schema examples**, not captures from a real disk or macOS 12.
+`info-ntfs.plist` and `list-single.plist` are **synthetic schema examples**, not captures from a real disk or macOS 12.
 
 The installed diskutil manual documents `list -plist`, `info -plist`, and `apfs list -plist`. Key spellings were checked against the installed diskutil binary; nesting and optional-field examples remain test assumptions requiring real-media capture during manual acceptance. Tests deliberately cover absent optional fields and report malformed required identity rather than inventing a volume UUID.
+
+`captured-macos27-*.plist` contain the relevant fields from real `diskutil info -plist` output captured on macOS 27.0.1 (26A434), Apple Silicon, on 2026-10-19. NTFS was mounted through ntfs-3g 2022.10.3/macFUSE; HFS+ and exFAT were inspected in their existing mounts. Device identifiers, UUIDs, volume names and paths are replaced with examples; retained field names, value types, filesystem names and writable flags reflect the captures. Unrelated fields are omitted. These fixtures verify current-host detail parsing, not full disk enumeration, other filesystem formats or macOS 12 compatibility. Usage output in the replay test remains synthetic.

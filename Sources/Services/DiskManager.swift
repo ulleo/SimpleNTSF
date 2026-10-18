@@ -33,6 +33,7 @@ class DiskManager: ObservableObject {
     private let configURL: URL?
     private let queryDisk: ((DiskInfo) throws -> DiskInfo)?
     private let executeCommand: CommandExecuting
+    private let operationVerificationTimeout: TimeInterval
     
     var addedUUIDs: Set<String> {
         Set(disks.map { $0.uuid })
@@ -76,11 +77,12 @@ class DiskManager: ObservableObject {
     
     init(configURL: URL? = nil, queryDisk: ((DiskInfo) throws -> DiskInfo)? = nil,
          executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))? = nil,
-         executeCommand: CommandExecuting? = nil) {
+         executeCommand: CommandExecuting? = nil, operationVerificationTimeout: TimeInterval = 15) {
         self.configURL = configURL
         self.queryDisk = queryDisk
         self.executeOperation = executeOperation
         self.executeCommand = executeCommand ?? { CommandRunner().run(executable: $0, arguments: $1, timeout: $2) }
+        self.operationVerificationTimeout = max(0, operationVerificationTimeout)
     }
     
     // MARK: - Validation
@@ -370,15 +372,16 @@ class DiskManager: ObservableObject {
             } else {
                 outcome = self.executeStep(operation, disk: disk)
             }
-            self.queryDiskInfo(disks: [disk]) { queried in
-                let verified = queried[0]
+            self.verifyOperationState(disk: disk, operation: operation, commandSucceeded: outcome.success) { verified, verificationFailure in
                 if let index = self.disks.firstIndex(where: { $0.uuid == uuid }) {
                     var updated = verified
                     updated.mountPoint = self.disks[index].mountPoint
                     self.disks[index] = updated
                 }
                 let result = VolumeOperationResult(operation: operation, commandSucceeded: outcome.success,
-                    commandMessage: outcome.message, queryState: verified.queryState, commandOutcome: outcome.commandOutcome, authorizationDenied: outcome.authorizationDenied)
+                    commandMessage: outcome.message, queryState: verified.queryState, commandOutcome: outcome.commandOutcome,
+                    authorizationDenied: outcome.authorizationDenied,
+                    verificationFailure: verificationFailure)
                 self.operationResults[uuid] = result
                 self.configurationRevision += 1
                 self.operatingUUIDs.remove(uuid)
@@ -386,6 +389,32 @@ class DiskManager: ObservableObject {
                 if self.operatingUUIDs.isEmpty && self.refreshDeferred { self.beginRefresh() }
             }
         }
+    }
+
+    /// Drivers may return before the mount is visible. Poll state, never repeat the command.
+    private func verifyOperationState(disk: DiskInfo, operation: VolumeOperation, commandSucceeded: Bool,
+                                      completion: @escaping (DiskInfo, String?) -> Void) {
+        let deadline = ProcessInfo.processInfo.systemUptime + operationVerificationTimeout
+        func poll() {
+            self.queryDiskInfo(disks: [disk]) { queried in
+                var actual = queried[0]
+                guard commandSucceeded,
+                      let mismatch = operation.verificationFailure(actual: actual, targetMountPoint: disk.mountPoint) else {
+                    completion(actual, nil)
+                    return
+                }
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                if remaining > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + min(0.25, remaining), execute: poll)
+                } else {
+                    let reason = "等待操作结果核实超时：" + mismatch + "；请刷新确认最终状态"
+                    actual.queryState = .unconfirmed(reason: reason)
+                    actual.isTimeout = true
+                    completion(actual, reason)
+                }
+            }
+        }
+        poll()
     }
 
     private func executeStep(_ operation: VolumeOperation, disk: DiskInfo) -> OperationExecution {

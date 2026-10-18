@@ -4,6 +4,22 @@ enum VolumeOperation: Equatable {
     case mount
     case unmount
     case remount
+
+    func verificationFailure(actual: DiskInfo, targetMountPoint: String) -> String? {
+        guard actual.isStateConfirmed else { return nil }
+        switch self {
+        case .unmount:
+            return actual.isMounted ? "核实后卷仍处于挂载状态，卸载未完成" : nil
+        case .mount, .remount:
+            guard actual.isMounted else { return "核实后卷仍未挂载，挂载未完成" }
+            guard !actual.currentMount.isEmpty,
+                  let current = try? MountPoint.resolvedPath(actual.currentMount),
+                  let target = try? MountPoint.resolvedPath(targetMountPoint), current == target else {
+                return "核实后的实际挂载点与请求的目标不一致：\(actual.currentMount)"
+            }
+            return nil
+        }
+    }
 }
 
 struct VolumeOperationResult: Equatable {
@@ -13,11 +29,15 @@ struct VolumeOperationResult: Equatable {
     let queryState: VolumeQueryState
     var commandOutcome: CommandOutcome? = nil
     var authorizationDenied = false
+    var verificationFailure: String? = nil
 
-    var success: Bool { commandSucceeded && queryState == .confirmed }
+    var success: Bool { commandSucceeded && queryState == .confirmed && verificationFailure == nil }
     var message: String {
+        if let verificationFailure = verificationFailure {
+            return "命令返回成功，但" + verificationFailure
+        }
         if case .unconfirmed(let reason) = queryState {
-            return commandMessage + "；状态未确认：" + reason
+            return (commandSucceeded ? "命令返回成功" : commandMessage) + "；状态未确认：" + reason
         }
         return commandMessage
     }

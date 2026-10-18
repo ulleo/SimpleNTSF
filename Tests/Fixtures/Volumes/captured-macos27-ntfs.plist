@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>DeviceIdentifier</key>
+	<string>disk91s2</string>
+	<key>FilesystemName</key>
+	<string>NTFS</string>
+	<key>FilesystemType</key>
+	<string>ntfs</string>
+	<key>FilesystemUserVisibleName</key>
+	<string>Windows NT File System (NTFS)</string>
+	<key>Internal</key>
+	<false/>
+	<key>MountPoint</key>
+	<string>/Users/example/Mounted/External NTFS</string>
+	<key>ParentWholeDisk</key>
+	<string>disk91</string>
+	<key>TotalSize</key>
+	<integer>8001545039872</integer>
+	<key>VolumeName</key>
+	<string>External NTFS</string>
+	<key>VolumeSize</key>
+	<integer>8001545039872</integer>
+	<key>VolumeUUID</key>
+	<string>11111111-1111-4111-8111-111111111111</string>
+	<key>Writable</key>
+	<true/>
+</dict>
+</plist>

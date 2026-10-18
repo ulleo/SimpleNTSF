@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>DeviceIdentifier</key>
+	<string>disk92s2</string>
+	<key>FilesystemName</key>
+	<string>Journaled HFS+</string>
+	<key>FilesystemType</key>
+	<string>hfs</string>
+	<key>FilesystemUserVisibleName</key>
+	<string>Mac OS Extended (Journaled)</string>
+	<key>Internal</key>
+	<false/>
+	<key>MountPoint</key>
+	<string>/Volumes/External HFS</string>
+	<key>ParentWholeDisk</key>
+	<string>disk92</string>
+	<key>TotalSize</key>
+	<integer>1000052097024</integer>
+	<key>VolumeName</key>
+	<string>External HFS</string>
+	<key>VolumeSize</key>
+	<integer>1000052097024</integer>
+	<key>VolumeUUID</key>
+	<string>22222222-2222-4222-8222-222222222222</string>
+	<key>Writable</key>
+	<true/>
+</dict>
+</plist>

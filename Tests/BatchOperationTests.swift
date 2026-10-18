@@ -81,6 +81,23 @@ struct BatchOperationTests {
         expect(allUnmounted?.items.map { $0.status } == [.succeeded] && !single.disks[0].isMounted, "batch unmount must reuse verified single-volume rules")
         print("PASS: all-success, all-skipped and unmount batches have explicit verified results")
 
+        let ineffective = DiskManager(configURL: config, queryDisk: { disk in
+            var result = disk
+            result.device = "disk99s1"
+            result.isMounted = false
+            result.currentMount = ""
+            return result
+        }, executeOperation: { _, _ in (true, "command returned zero") }, operationVerificationTimeout: 0.05)
+        refresh(ineffective)
+        var ineffectiveResult: BatchOperationResult?
+        ineffective.performBatch(operation: .mount) { ineffectiveResult = $0 }
+        waitUntil("ineffective command must still complete the batch") { ineffectiveResult != nil }
+        expect(ineffectiveResult?.items.first?.status == .failed && ineffectiveResult?.hasFailures == true,
+               "batch must count a successful command with a contradictory verified state as failure")
+        expect(ineffectiveResult?.message.contains("仍未挂载") == true && !ineffective.isBatchOperating,
+               "batch must explain the actual state and release busy")
+        print("PASS: batch reports commands that did not achieve the requested state as failures")
+
         try uuids.map { "\($0):\(target)/\($0)\n" }.joined().write(to: config, atomically: true, encoding: .utf8)
         let firstStarted = DispatchSemaphore(value: 0)
         let releaseFirst = DispatchSemaphore(value: 0)

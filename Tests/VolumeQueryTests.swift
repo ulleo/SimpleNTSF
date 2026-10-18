@@ -61,6 +61,25 @@ struct VolumeQueryTests {
         expect(commands.calls.filter { $0 == "info|-plist|disk99s1" }.count == 1, "scan must query each device only once")
         expect(commands.calls.filter { $0 == "info|-plist|" + volume.uuid }.count == 1, "refresh must extract all fields from a single detail query")
         print("PASS: scan and refresh share one complete structured detail query per volume")
+        for (name, expectedType) in [("ntfs", "NTFS"), ("hfs", "HFS+"), ("exfat", "exFAT")] {
+            let data = fixture("captured-macos27-" + name)
+            let raw = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as! [String: Any]
+            let uuid = raw["VolumeUUID"] as! String
+            let mount = raw["MountPoint"] as! String
+            let captured = VolumeQuery(execute: { executable, arguments, _ in
+                if executable == "/bin/df" {
+                    expect(arguments == ["-h", mount], "captured mount paths must reach usage queries intact")
+                    return CommandResult(outcome: .exited(0), stdout: Data("Filesystem Size Used Avail Capacity\n/dev/disk99s2 2Gi 1Gi 1Gi 50%\n".utf8))
+                }
+                expect(executable == Constants.diskUtilPath && arguments == ["info", "-plist", uuid], "captured fixture must exercise the normal detail query")
+                return CommandResult(outcome: .exited(0), stdout: data)
+            })
+            let disk = DiskInfo(uuid: uuid, volumeName: "", mountPoint: "", device: "", currentMount: "", isMounted: false)
+            let refreshed = try captured.refresh(disk)
+            expect(refreshed.isMounted && refreshed.currentMount == mount && refreshed.fileSystemType == expectedType,
+                   "anonymized macOS 27 captures must parse their actual filesystem and mounted state")
+        }
+        print("PASS: captured macOS 27 NTFS/macFUSE, HFS+ and exFAT fields support configured-volume refresh")
         let mixed = VolumeCommands()
         let identifiers = ["disk10", "disk11s1", "disk12s1", "disk13s1", "disk14s1", "disk15s1", "disk16s1", "disk17s1", "disk18s1"]
         mixed.outputs["list|-plist"] = CommandResult(outcome: .exited(0), stdout: plist(["AllDisks": identifiers + ["disk10"]]))

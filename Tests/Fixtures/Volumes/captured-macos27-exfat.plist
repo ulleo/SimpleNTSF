@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>DeviceIdentifier</key>
+	<string>disk93s2</string>
+	<key>FilesystemName</key>
+	<string>ExFAT</string>
+	<key>FilesystemType</key>
+	<string>exfat</string>
+	<key>FilesystemUserVisibleName</key>
+	<string>ExFAT</string>
+	<key>Internal</key>
+	<false/>
+	<key>MountPoint</key>
+	<string>/Volumes/Example's SSD</string>
+	<key>ParentWholeDisk</key>
+	<string>disk93</string>
+	<key>TotalSize</key>
+	<integer>999961001984</integer>
+	<key>VolumeName</key>
+	<string>Example's SSD</string>
+	<key>VolumeSize</key>
+	<integer>999961001984</integer>
+	<key>VolumeUUID</key>
+	<string>33333333-3333-4333-8333-333333333333</string>
+	<key>Writable</key>
+	<true/>
+</dict>
+</plist>

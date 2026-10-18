@@ -68,6 +68,27 @@ struct OperationTests {
         waitUntil("refresh deferred by an operation must resume") { deferredRefreshFinished }
         expect(!manager.isLoading && manager.disks[0].isMounted, "resumed refresh must retain verified current state")
         print("PASS: case-insensitive single-volume operation owns canonical busy, verification and duplicate rejection")
+        var delayedQueries = 0
+        var delayedCommands = 0
+        let delayed = DiskManager(configURL: config, queryDisk: { disk in
+            delayedQueries += 1
+            var result = disk
+            result.device = "disk99s1"
+            result.isMounted = delayedQueries >= 3
+            result.currentMount = result.isMounted ? target : ""
+            return result
+        }, executeOperation: { _, _ in
+            delayedCommands += 1
+            return (true, "driver started")
+        })
+        refresh(delayed)
+        var delayedResult: VolumeOperationResult?
+        delayed.performOperation(uuid: uuid, operation: .mount) { delayedResult = $0 }
+        waitUntil("delayed driver mount must reach verified completion") { delayedResult != nil }
+        expect(delayedResult?.success == true && delayed.disks[0].isMounted && delayedQueries >= 3,
+               "a successful asynchronous mount must wait for the requested actual state")
+        expect(delayedCommands == 1, "state verification must not repeat the mount command")
+        print("PASS: delayed driver completion polls state without repeating the command")
         var steps: [VolumeOperation] = []
         var failUnmount = true
         var mounted = true

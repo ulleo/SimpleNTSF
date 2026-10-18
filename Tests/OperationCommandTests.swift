@@ -23,7 +23,7 @@ private func metadata(arguments: [String], uuid: String, fileSystem: String) -> 
 
 private func exercise(config: URL, uuid: String, target: URL, operation: VolumeOperation,
                       fileSystem: String = "NTFS", commandResults: [CommandResult],
-                      mountedAfter: Bool, verificationFails: Bool = false)
+                      mountedAfter: Bool, verificationFails: Bool = false, verifiedMountPoint: String? = nil)
     -> (result: VolumeOperationResult, calls: [[String]], deadlines: [TimeInterval], disk: DiskInfo) {
     var actualMounted = operation != .mount
     var calls: [[String]] = []
@@ -34,7 +34,7 @@ private func exercise(config: URL, uuid: String, target: URL, operation: VolumeO
         result.device = "disk99s1"
         result.fileSystemType = fileSystem
         result.isMounted = actualMounted
-        result.currentMount = actualMounted ? target.path : ""
+        result.currentMount = actualMounted ? (verifiedMountPoint ?? target.path) : ""
         return result
     }, executeCommand: { executable, arguments, deadline in
         if executable == Constants.diskUtilPath {
@@ -47,7 +47,7 @@ private func exercise(config: URL, uuid: String, target: URL, operation: VolumeO
         deadlines.append(deadline)
         actualMounted = calls.count == commandResults.count ? mountedAfter : false
         return reply
-    })
+    }, operationVerificationTimeout: 0.05)
     var loaded = false
     manager.loadConfig { loaded = true }
     waitUntil("operation fixture must load") { loaded }
@@ -121,6 +121,25 @@ struct OperationCommandTests {
         let unmounted = exercise(config: config, uuid: uuid, target: target, operation: .unmount,
             commandResults: [CommandResult(outcome: .exited(0))], mountedAfter: false)
         expect(unmounted.calls == [["-n", Constants.diskUtilPath, "unmount", "/dev/disk99s1"]] && unmounted.deadlines == [10], "selected volume must use volume-scoped unmount without force")
+        for operation: VolumeOperation in [.mount, .unmount, .remount] {
+            let replies = Array(repeating: CommandResult(outcome: .exited(0)), count: operation == .remount ? 2 : 1)
+            let unchanged = exercise(config: config, uuid: uuid, target: target, operation: operation,
+                commandResults: replies, mountedAfter: operation == .unmount)
+            expect(unchanged.result.commandSucceeded, "zero exit must remain a successful command result")
+            expect(!unchanged.result.success, "zero exit without the requested mounted state must not report operation success")
+            expect(unchanged.result.message.contains("核实"), "operation mismatch must explain the verified state")
+            expect(!unchanged.disk.isStateConfirmed && !unchanged.disk.canMount && !unchanged.disk.canUnmount,
+                   "verification deadline must require a fresh state check before another operation")
+        }
+        print("PASS: command success cannot override a contradictory verified mount state")
+        let wrongTarget = exercise(config: config, uuid: uuid, target: target, operation: .mount,
+            commandResults: [CommandResult(outcome: .exited(0))], mountedAfter: true,
+            verifiedMountPoint: "/Volumes/Unexpected")
+        expect(!wrongTarget.result.success && wrongTarget.result.message.contains("目标不一致"), "a mount at a different path must not satisfy the requested operation")
+        let equivalentTarget = exercise(config: config, uuid: uuid, target: target, operation: .mount,
+            commandResults: [CommandResult(outcome: .exited(0))], mountedAfter: true,
+            verifiedMountPoint: target.path + "/.")
+        expect(equivalentTarget.result.success, "equivalent normalized mount paths must satisfy verification")
         let remounted = exercise(config: config, uuid: uuid, target: target, operation: .remount,
             commandResults: [CommandResult(outcome: .exited(0)), CommandResult(outcome: .exited(5), stderr: Data("mount refused".utf8))], mountedAfter: false)
         expect(remounted.calls.count == 2 && remounted.result.commandOutcome == .exited(5) && !remounted.disk.isMounted, "partial remount failure must preserve failing step outcome and verify unmounted state without retry")
