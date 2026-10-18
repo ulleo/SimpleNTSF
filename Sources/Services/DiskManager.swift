@@ -244,6 +244,32 @@ class DiskManager: ObservableObject {
         }
     }
 
+    private enum OperationIneligibility {
+        case missingConfiguration, unconfirmedState, alreadyMounted, notMounted
+
+        func message(forBatch: Bool) -> String {
+            switch self {
+            case .missingConfiguration:
+                return forBatch ? "挂载配置已删除" : "卷状态未确认，请刷新后重试"
+            case .unconfirmedState:
+                return "卷状态未确认，请刷新后重试"
+            case .alreadyMounted:
+                return forBatch ? "卷已挂载" : "卷已挂载，请使用重新挂载"
+            case .notMounted:
+                return "卷未挂载"
+            }
+        }
+    }
+
+    /// Both entry paths use the same volume eligibility; busy checks belong to the coordinator.
+    private func operationIneligibility(_ disk: DiskInfo?, operation: VolumeOperation) -> OperationIneligibility? {
+        guard let disk = disk else { return .missingConfiguration }
+        guard disk.isStateConfirmed else { return .unconfirmedState }
+        if operation == .mount && !disk.canMount { return .alreadyMounted }
+        if operation != .mount && !disk.canUnmount { return .notMounted }
+        return nil
+    }
+
     func performBatch(operation: VolumeOperation, completion: @escaping (BatchOperationResult) -> Void = { _ in }) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { self.performBatch(operation: operation, completion: completion) }
@@ -283,15 +309,9 @@ class DiskManager: ObservableObject {
             while index < targets.count {
                 let target = targets[index]
                 let current = self.disks.first { $0.uuid == target.uuid }
-                let reason: String?
-                if current == nil { reason = "挂载配置已删除" }
-                else if current?.isStateConfirmed != true { reason = "卷状态未确认，请刷新后重试" }
-                else if operation == .mount && current?.canMount != true { reason = "卷已挂载" }
-                else if operation != .mount && current?.canUnmount != true { reason = "卷未挂载" }
-                else { reason = nil }
-                if let reason = reason {
+                if let reason = self.operationIneligibility(current, operation: operation) {
                     results.append(BatchVolumeResult(uuid: target.uuid, volumeName: target.volumeName,
-                        status: .skipped, message: reason, operationResult: nil))
+                        status: .skipped, message: reason.message(forBatch: true), operationResult: nil))
                     index += 1
                     continue
                 }
@@ -320,14 +340,12 @@ class DiskManager: ObservableObject {
             DispatchQueue.main.async { self.startOperation(uuid: uuid, operation: operation, batchStep: batchStep, completion: completion) }
             return
         }
+        let uuid = canonicalUUID(uuid)
         let disk = disks.first { $0.uuid == uuid }
         let rejection: String?
         if isBatchOperating && !batchStep { rejection = "批量操作进行中，请稍后重试" }
         else if operatingUUIDs.contains(uuid) { rejection = "该卷正在操作中，请稍后重试" }
-        else if disk?.isStateConfirmed != true { rejection = "卷状态未确认，请刷新后重试" }
-        else if operation == .mount && disk?.canMount != true { rejection = "卷已挂载，请使用重新挂载" }
-        else if operation != .mount && disk?.canUnmount != true { rejection = "卷未挂载" }
-        else { rejection = nil }
+        else { rejection = operationIneligibility(disk, operation: operation)?.message(forBatch: false) }
         if let rejection = rejection {
             completion(VolumeOperationResult(operation: operation, commandSucceeded: false,
                 commandMessage: rejection, queryState: disk?.queryState ?? .unconfirmed(reason: "未找到卷配置")))
@@ -441,7 +459,7 @@ class DiskManager: ObservableObject {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.addDisk(uuid: uuid, mountPoint: mountPoint) }
         }
-        let uuid = uuid.uppercased()
+        let uuid = canonicalUUID(uuid)
         guard isValidUUID(uuid) else {
             return (false, "无效的 UUID 格式，请使用类似 E0719CA3-71B2-12E0-A9E0-12B4EA12B4C2 的格式")
         }
@@ -482,7 +500,7 @@ class DiskManager: ObservableObject {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.updateMountPoint(uuid: uuid, newMountPoint: newMountPoint) }
         }
-        let uuid = uuid.uppercased()
+        let uuid = canonicalUUID(uuid)
         let resolvedMountPoint: String
         do { resolvedMountPoint = try MountPoint.normalize(newMountPoint) }
         catch { return (false, error.localizedDescription) }
@@ -523,7 +541,7 @@ class DiskManager: ObservableObject {
         guard Thread.isMainThread else {
             return DispatchQueue.main.sync { self.deleteDisk(uuid: uuid) }
         }
-        let uuid = uuid.uppercased()
+        let uuid = canonicalUUID(uuid)
         fileLock.lock()
         defer { fileLock.unlock() }
         
@@ -542,12 +560,14 @@ class DiskManager: ObservableObject {
             return false
         }
     }
+    private func canonicalUUID(_ uuid: String) -> String { uuid.uppercased() }
+
     /// UUID formatting is flexible; the target after the separator retains its actual path bytes.
     private func configurationEntry(_ rawLine: String) -> (uuid: String, mountPoint: String)? {
         let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
         guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("#"),
               let separator = line.firstIndex(of: ":") else { return nil }
-        let uuid = line[..<separator].trimmingCharacters(in: .whitespaces).uppercased()
+        let uuid = canonicalUUID(line[..<separator].trimmingCharacters(in: .whitespaces))
         guard isValidUUID(uuid) else { return nil }
         let path = line[line.index(after: separator)...].drop(while: { $0 == " " || $0 == "\t" })
         return (uuid, String(path))

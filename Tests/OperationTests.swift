@@ -49,8 +49,8 @@ struct OperationTests {
         refresh(manager)
         gateQuery = true
         var completed: VolumeOperationResult?
-        manager.performOperation(uuid: uuid, operation: .mount) { completed = $0 }
-        expect(manager.operatingUUIDs.contains(uuid), "operation must publish busy immediately")
+        manager.performOperation(uuid: uuid.lowercased(), operation: .mount) { completed = $0 }
+        expect(manager.operatingUUIDs.contains(uuid), "lowercase volume UUID must start an operation with canonical busy identity")
         expect(queryStarted.wait(timeout: .now() + 2) == .success, "operation must query actual state after its command")
         expect(completed == nil && manager.operatingUUIDs.contains(uuid), "command completion cannot release busy before verification")
         var rejected: VolumeOperationResult?
@@ -64,10 +64,10 @@ struct OperationTests {
         waitUntil("verified operation must finish") { completed != nil }
         expect(manager.disks[0].isMounted && manager.disks[0].isStateConfirmed, "operation completion must observe verified actual state")
         expect(!manager.operatingUUIDs.contains(uuid) && completed?.commandSucceeded == true, "busy ends only after actual state and command outcome are published")
-        expect(manager.operationResults[uuid] == completed, "manager must retain the outcome shown to the user")
+        expect(manager.operationResults[uuid] == completed && manager.operationResults[uuid.lowercased()] == nil, "UUID case must not split the retained operation outcome")
         waitUntil("refresh deferred by an operation must resume") { deferredRefreshFinished }
         expect(!manager.isLoading && manager.disks[0].isMounted, "resumed refresh must retain verified current state")
-        print("PASS: single-volume operation owns busy, verification and duplicate rejection")
+        print("PASS: case-insensitive single-volume operation owns canonical busy, verification and duplicate rejection")
         var steps: [VolumeOperation] = []
         var failUnmount = true
         var mounted = true
