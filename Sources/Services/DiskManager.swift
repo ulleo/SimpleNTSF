@@ -14,6 +14,9 @@ class DiskManager: ObservableObject {
     // Main-thread revision: a successful configuration write invalidates in-flight queries.
     private var configurationRevision = 0
     private var refreshDeferred = false
+    private var isVerifyingBatch = false
+    @Published private(set) var isBatchOperating = false
+    @Published private(set) var batchResult: BatchOperationResult?
     @Published private(set) var operatingUUIDs: Set<String> = []
     @Published private(set) var operationResults: [String: VolumeOperationResult] = [:]
     private let executeOperation: ((VolumeOperation, DiskInfo) -> (success: Bool, message: String))?
@@ -111,7 +114,7 @@ class DiskManager: ObservableObject {
 
     /// All visible state and revision decisions belong to the main thread.
     private func beginRefresh() {
-        guard operatingUUIDs.isEmpty else {
+        guard operatingUUIDs.isEmpty && (!isBatchOperating || isVerifyingBatch) else {
             refreshDeferred = true
             return
         }
@@ -430,16 +433,87 @@ class DiskManager: ObservableObject {
         return nil
     }
     
+    /// Freeze membership, then recheck the current configuration and state before each step.
+    func performBatch(operation: VolumeOperation, completion: @escaping (BatchOperationResult) -> Void = { _ in }) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.performBatch(operation: operation, completion: completion) }
+            return
+        }
+        guard !isBatchOperating && operatingUUIDs.isEmpty else {
+            completion(BatchOperationResult(operation: operation, items: [], rejectionReason: "已有磁盘操作进行中，请稍后重试"))
+            return
+        }
+        let targets = disks
+        var results: [BatchVolumeResult] = []
+        isBatchOperating = true
+        batchResult = nil
+
+        func finish() {
+            self.isVerifyingBatch = true
+            self.loadConfig {
+                let verifiedResults = results.map { item -> BatchVolumeResult in
+                    if item.status == .succeeded, let disk = self.disks.first(where: { $0.uuid == item.uuid }), !disk.isStateConfirmed {
+                        return BatchVolumeResult(uuid: item.uuid, volumeName: item.volumeName, status: .failed,
+                            message: "操作已结束，状态未确认：" + (disk.queryFailureMessage ?? "请刷新重试"), operationResult: item.operationResult)
+                    }
+                    return item
+                }
+                let result = BatchOperationResult(operation: operation, items: verifiedResults, refreshError: self.refreshError)
+                self.batchResult = result
+                self.isVerifyingBatch = false
+                self.isBatchOperating = false
+                completion(result)
+            }
+            // A configuration change or user refresh may already be waiting behind this batch.
+            if self.refreshDeferred { self.beginRefresh() }
+        }
+
+        func next(_ startIndex: Int) {
+            var index = startIndex
+            while index < targets.count {
+                let target = targets[index]
+                let current = self.disks.first { $0.uuid == target.uuid }
+                let reason: String?
+                if current == nil { reason = "挂载配置已删除" }
+                else if current?.isStateConfirmed != true { reason = "卷状态未确认，请刷新后重试" }
+                else if operation == .mount && current?.canMount != true { reason = "卷已挂载" }
+                else if operation != .mount && current?.canUnmount != true { reason = "卷未挂载" }
+                else { reason = nil }
+                if let reason = reason {
+                    results.append(BatchVolumeResult(uuid: target.uuid, volumeName: target.volumeName,
+                        status: .skipped, message: reason, operationResult: nil))
+                    index += 1
+                    continue
+                }
+                let nextIndex = index + 1
+                self.startOperation(uuid: target.uuid, operation: operation, batchStep: true) { outcome in
+                    results.append(BatchVolumeResult(uuid: target.uuid, volumeName: target.volumeName,
+                        status: outcome.success ? .succeeded : .failed, message: outcome.message, operationResult: outcome))
+                    next(nextIndex)
+                }
+                return
+            }
+            finish()
+        }
+        next(0)
+    }
+
     /// The operation remains busy until its actual volume state has been queried and published.
     func performOperation(uuid: String, operation: VolumeOperation,
                           completion: @escaping (VolumeOperationResult) -> Void = { _ in }) {
+        startOperation(uuid: uuid, operation: operation, batchStep: false, completion: completion)
+    }
+
+    private func startOperation(uuid: String, operation: VolumeOperation, batchStep: Bool,
+                                completion: @escaping (VolumeOperationResult) -> Void) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.performOperation(uuid: uuid, operation: operation, completion: completion) }
+            DispatchQueue.main.async { self.startOperation(uuid: uuid, operation: operation, batchStep: batchStep, completion: completion) }
             return
         }
         let disk = disks.first { $0.uuid == uuid }
         let rejection: String?
-        if operatingUUIDs.contains(uuid) { rejection = "该卷正在操作中，请稍后重试" }
+        if isBatchOperating && !batchStep { rejection = "批量操作进行中，请稍后重试" }
+        else if operatingUUIDs.contains(uuid) { rejection = "该卷正在操作中，请稍后重试" }
         else if disk?.isStateConfirmed != true { rejection = "卷状态未确认，请刷新后重试" }
         else if operation == .mount && disk?.canMount != true { rejection = "卷已挂载，请使用重新挂载" }
         else if operation != .mount && disk?.canUnmount != true { rejection = "卷未挂载" }
