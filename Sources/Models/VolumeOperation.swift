@@ -11,6 +11,7 @@ struct VolumeOperationResult: Equatable {
     let commandSucceeded: Bool
     let commandMessage: String
     let queryState: VolumeQueryState
+    var commandOutcome: CommandOutcome? = nil
 
     var success: Bool { commandSucceeded && queryState == .confirmed }
     var message: String {
