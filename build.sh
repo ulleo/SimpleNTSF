@@ -16,6 +16,7 @@ SWIFT_FILES=(
     "$SOURCES_DIR/Utilities/MountPoint.swift"
     "$SOURCES_DIR/Models/DiskInfo.swift"
     "$SOURCES_DIR/Models/PhysicalDisk.swift"
+    "$SOURCES_DIR/Services/CommandRunner.swift"
     "$SOURCES_DIR/Services/DiskManager.swift"
     "$SOURCES_DIR/Services/PermissionConfiguration.swift"
     "$SOURCES_DIR/Views/DiskRow.swift"
